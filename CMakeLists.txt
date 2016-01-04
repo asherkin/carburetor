@@ -1,8 +1,10 @@
-cmake_minimum_required(VERSION 3.3.2)
+cmake_minimum_required(VERSION 2.8.0)
 project(carburetor)
 
 include(ExternalProject)
 include(CheckIncludeFileCXX)
+
+list(APPEND CMAKE_CXX_FLAGS "-std=c++11")
 
 check_include_file_cxx(mysql.h HAS_MYSQL)
 if(NOT HAS_MYSQL)
@@ -54,10 +56,20 @@ set(BREAKPAD_INCLUDE ${SOURCE_DIR}/src)
 ExternalProject_Get_Property(breakpad BINARY_DIR)
 set(BREAKPAD_LIBS ${BINARY_DIR}/src/libbreakpad.a ${BINARY_DIR}/src/third_party/libdisasm/libdisasm.a)
 
+ExternalProject_Add(
+  json
+  GIT_REPOSITORY https://github.com/nlohmann/json.git
+  CONFIGURE_COMMAND ""
+  BUILD_COMMAND ""
+  BUILD_IN_SOURCE 1
+  INSTALL_COMMAND ""
+)
+
+ExternalProject_Get_Property(json SOURCE_DIR)
+set(JSON_INCLUDE ${SOURCE_DIR}/src)
+
 add_executable(${PROJECT_NAME} main.cpp)
 
-target_compile_features(${PROJECT_NAME} PRIVATE cxx_constexpr)
-
-add_dependencies(${PROJECT_NAME} beanstalk breakpad)
-target_include_directories(${PROJECT_NAME} PRIVATE ${BEANSTALK_INCLUDE} ${BREAKPAD_INCLUDE})
+add_dependencies(${PROJECT_NAME} beanstalk breakpad json)
+target_include_directories(${PROJECT_NAME} PRIVATE ${BEANSTALK_INCLUDE} ${BREAKPAD_INCLUDE} ${JSON_INCLUDE})
 target_link_libraries(${PROJECT_NAME} PRIVATE mysqlpp ${BEANSTALK_LIBS} ${BREAKPAD_LIBS})
