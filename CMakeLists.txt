@@ -6,25 +6,20 @@ include(CheckIncludeFileCXX)
 
 list(APPEND CMAKE_CXX_FLAGS "-std=c++11")
 
-check_include_file_cxx(mysql.h HAS_MYSQL)
-if(NOT HAS_MYSQL)
-  check_include_file_cxx(mysql/mysql.h HAS_BURIED_MYSQL)
-  if (HAS_BURIED_MYSQL)
-    add_definitions(-DMYSQLPP_MYSQL_HEADERS_BURIED)
-    list(APPEND CMAKE_REQUIRED_DEFINITIONS -DMYSQLPP_MYSQL_HEADERS_BURIED)
-  else()
+check_include_file_cxx(mysql/mysql.h HAS_BURIED_MYSQL)
+if (HAS_BURIED_MYSQL)
+  add_definitions(-DMYSQLPP_MYSQL_HEADERS_BURIED)
+  list(APPEND CMAKE_REQUIRED_DEFINITIONS -DMYSQLPP_MYSQL_HEADERS_BURIED)
+else()
+  check_include_file_cxx(mysql.h HAS_MYSQL)
+  if(NOT HAS_MYSQL)
     message(SEND_ERROR "Failed to find MySQL C client header.")
   endif()
 endif()
 
-check_include_file_cxx(mysql++.h HAS_MYSQLPP)
+check_include_file_cxx(mysql++/mysql++.h HAS_MYSQLPP)
 if(NOT HAS_MYSQLPP)
-  check_include_file_cxx(mysql++/mysql++.h HAS_BURIED_MYSQLPP)
-  if (HAS_BURIED_MYSQLPP)
-    add_definitions(-DMYSQLPP_HEADERS_BURIED)
-  else()
-    message(SEND_ERROR "Failed to find MySQL++ client header.")
-  endif()
+  message(SEND_ERROR "Failed to find MySQL++ client header.")
 endif()
 
 ExternalProject_Add(
@@ -37,10 +32,10 @@ ExternalProject_Add(
 )
 
 ExternalProject_Get_Property(beanstalk SOURCE_DIR)
-set(BEANSTALK_INCLUDE ${SOURCE_DIR})
+set(BEANSTALK_INCLUDE_DIRS ${SOURCE_DIR})
 
 ExternalProject_Get_Property(beanstalk BINARY_DIR)
-set(BEANSTALK_LIBS ${BINARY_DIR}/libbeanstalk.a)
+set(BEANSTALK_LIBRARIES ${BINARY_DIR}/libbeanstalk.a)
 
 ExternalProject_Add(
   breakpad
@@ -51,10 +46,10 @@ ExternalProject_Add(
 )
 
 ExternalProject_Get_Property(breakpad SOURCE_DIR)
-set(BREAKPAD_INCLUDE ${SOURCE_DIR}/src)
+set(BREAKPAD_INCLUDE_DIRS ${SOURCE_DIR}/src)
 
 ExternalProject_Get_Property(breakpad BINARY_DIR)
-set(BREAKPAD_LIBS ${BINARY_DIR}/src/libbreakpad.a ${BINARY_DIR}/src/third_party/libdisasm/libdisasm.a)
+set(BREAKPAD_LIBRARIES ${BINARY_DIR}/src/libbreakpad.a ${BINARY_DIR}/src/third_party/libdisasm/libdisasm.a)
 
 ExternalProject_Add(
   json
@@ -66,10 +61,9 @@ ExternalProject_Add(
 )
 
 ExternalProject_Get_Property(json SOURCE_DIR)
-set(JSON_INCLUDE ${SOURCE_DIR}/src)
+set(JSON_INCLUDE_DIRS ${SOURCE_DIR}/src)
 
 add_executable(${PROJECT_NAME} main.cpp)
-
 add_dependencies(${PROJECT_NAME} beanstalk breakpad json)
-target_include_directories(${PROJECT_NAME} PRIVATE ${BEANSTALK_INCLUDE} ${BREAKPAD_INCLUDE} ${JSON_INCLUDE})
-target_link_libraries(${PROJECT_NAME} PRIVATE mysqlpp ${BEANSTALK_LIBS} ${BREAKPAD_LIBS})
+target_include_directories(${PROJECT_NAME} PRIVATE ${BEANSTALK_INCLUDE_DIRS} ${BREAKPAD_INCLUDE_DIRS} ${JSON_INCLUDE_DIRS})
+target_link_libraries(${PROJECT_NAME} PRIVATE mysqlpp ${BEANSTALK_LIBRARIES} ${BREAKPAD_LIBRARIES})
