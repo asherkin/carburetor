@@ -14,8 +14,9 @@
 #include <google_breakpad/processor/call_stack.h>
 #include <google_breakpad/processor/stack_frame.h>
 #include <processor/logging.h>
-#include <processor/simple_symbol_supplier.h>
 #include <processor/pathname_stripper.h>
+
+#include "compressed_symbol_supplier.h"
 
 using Beanstalk::Client;
 using Beanstalk::Job;
@@ -25,7 +26,6 @@ using nlohmann::json;
 using mysqlpp::Connection;
 
 using google_breakpad::Minidump;
-using google_breakpad::SimpleSymbolSupplier;
 using google_breakpad::BasicSourceLineResolver;
 using google_breakpad::MinidumpProcessor;
 using google_breakpad::ProcessState;
@@ -33,6 +33,9 @@ using google_breakpad::ProcessResult;
 using google_breakpad::CallStack;
 using google_breakpad::StackFrame;
 using google_breakpad::PathnameStripper;
+
+// This really shouldn't be in the google_breakpad namespace.
+using google_breakpad::CompressedSymbolSupplier;
 
 constexpr auto config_beanstalk_host = "127.0.0.1";
 constexpr auto config_beanstalk_port = 11300;
@@ -56,9 +59,15 @@ int main(int argc, char *argv[]) {
 
   BPLOG(INFO) << json::parse("[1, 2, 3]").dump();
 
-  SimpleSymbolSupplier symbol_supplier("/home/asherkin/breakpad-symbols");
-  BasicSourceLineResolver resolver;
-  MinidumpProcessor minidump_processor(&symbol_supplier, &resolver);
+  CompressedSymbolSupplier symbol_supplier({
+    "/home/asherkin/breakpad-symbols/sourcemod",
+    "/home/asherkin/breakpad-symbols/valve",
+    "/home/asherkin/breakpad-symbols/microsoft",
+    "/home/asherkin/breakpad-symbols/electron",
+    "/home/asherkin/breakpad-symbols/public",
+  });
+  //BasicSourceLineResolver resolver;
+  //MinidumpProcessor minidump_processor(&symbol_supplier, &resolver);
 
   Job job;
   while (true) {
@@ -75,6 +84,10 @@ int main(int argc, char *argv[]) {
 
     ProcessState process_state;
     auto minidump_file = "/home/asherkin/breakpad-dumps/" + id.substr(0, 2) + "/" + id + ".dmp";
+
+    // Create this inside the loop to avoid keeping a global symbol cache.
+    BasicSourceLineResolver resolver;
+    MinidumpProcessor minidump_processor(&symbol_supplier, &resolver);
 
     ProcessResult process_result = minidump_processor.Process(minidump_file, &process_state);
 
