@@ -71,14 +71,17 @@ int main(int argc, char *argv[]) {
 
   Job job;
   while (true) {
-    queue.reserve(job);
+    if (!queue.reserve(job) || !job) {
+      BPLOG(ERROR) << "Failed to reserve job.";
+      break;
+    }
 
     json body = json::parse(job.body());
     const std::string &id = body["id"];
     BPLOG(INFO) << id << " " << body["ip"] << " " << body["owner"];
 
     // Delete the job early while we're testing.
-    queue.del(job);
+    //queue.del(job);
 
     auto start = std::chrono::steady_clock::now();
 
@@ -92,11 +95,13 @@ int main(int argc, char *argv[]) {
     ProcessResult process_result = minidump_processor.Process(minidump_file, &process_state);
 
     if (process_result == google_breakpad::PROCESS_ERROR_MINIDUMP_NOT_FOUND) {
+      queue.del(job);
       continue;
     }
 
     if (process_result != google_breakpad::PROCESS_OK) {
       BPLOG(ERROR) << "MinidumpProcessor::Process failed";
+      queue.bury(job);
       continue;
     }
 
@@ -107,10 +112,21 @@ int main(int argc, char *argv[]) {
       requesting_thread = 0;
     }
 
-    std::cout << id << ": ";
-
     const CallStack *stack = process_state.threads()->at(requesting_thread);
+    if (!stack) {
+      BPLOG(ERROR) << "Missing stack for thread " << requesting_thread;
+      queue.bury(job);
+      continue;
+    }
+
     const StackFrame *frame = stack->frames()->at(0);
+    if (!stack) {
+      BPLOG(ERROR) << "Missing frame 0 for thread " << requesting_thread;
+      queue.bury(job);
+      continue;
+    }
+
+    std::cout << id << ": ";
 
     std::cout << std::hex;
     if (frame->module) {
@@ -134,6 +150,8 @@ int main(int argc, char *argv[]) {
 
     double elapsedSeconds = ((end - start).count()) * std::chrono::steady_clock::period::num / static_cast<double>(std::chrono::steady_clock::period::den);
     std::cout << " (" << elapsedSeconds << "s)" << std::endl;
+
+    queue.del(job);
   }
 
   return 0;

@@ -119,7 +119,7 @@ SymbolSupplier::SymbolResult CompressedSymbolSupplier::GetSymbolFile(
     uint32_t uncompressed_length;
     read(symbol_fd, &uncompressed_length, sizeof(uncompressed_length));
 
-    std::cout << *symbol_file << " " << uncompressed_length;
+    //std::cout << *symbol_file << " " << uncompressed_length;
 
     lseek(symbol_fd, 0, SEEK_SET);
 
@@ -128,7 +128,7 @@ SymbolSupplier::SymbolResult CompressedSymbolSupplier::GetSymbolFile(
     symbol_data->resize(uncompressed_length);
     size_t actual_length = gzread(symbol_gz_file, &(*symbol_data)[0], symbol_data->size());
 
-    std::cout << " " << actual_length << std::endl;
+    //std::cout << " " << actual_length << std::endl;
 
     gzclose_r(symbol_gz_file);
 
