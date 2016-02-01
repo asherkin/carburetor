@@ -65,7 +65,7 @@ set(JSON_INCLUDE_DIRS ${SOURCE_DIR}/src)
 
 find_package(ZLIB REQUIRED)
 
-add_executable(${PROJECT_NAME} main.cpp compressed_symbol_supplier.cpp)
+add_executable(${PROJECT_NAME} main.cpp compressed_symbol_supplier.cpp repo_source_line_resolver.cc)
 add_dependencies(${PROJECT_NAME} beanstalk breakpad json)
 target_include_directories(${PROJECT_NAME} PRIVATE ${BEANSTALK_INCLUDE_DIRS} ${BREAKPAD_INCLUDE_DIRS} ${JSON_INCLUDE_DIRS} ${ZLIB_INCLUDE_DIRS})
 target_link_libraries(${PROJECT_NAME} PRIVATE mysqlpp ${BEANSTALK_LIBRARIES} ${BREAKPAD_LIBRARIES} ${ZLIB_LIBRARIES})
