@@ -1,4 +1,5 @@
 #include <iostream>
+#include <fstream>
 #include <chrono>
 
 #include <beanstalk.hpp>
@@ -37,114 +38,54 @@ using google_breakpad::PathnameStripper;
 using google_breakpad::CompressedSymbolSupplier;
 using google_breakpad::RepoSourceLineResolver;
 
-constexpr auto config_beanstalk_host = "127.0.0.1";
-constexpr auto config_beanstalk_port = 11300;
-constexpr auto config_beanstalk_queue = "carburetor";
-
-constexpr auto config_mysql_host = (const char *)NULL;
-constexpr auto config_mysql_port = 0;
-constexpr auto config_mysql_user = "carburetor";
-constexpr auto config_mysql_password = "carburetor";
-constexpr auto config_mysql_db = "carburetor";
-
-enum ProcessMinidumpResult {
-  PMR_Ok,
-  PMR_NoFile,
-  PMR_Failed,
-};
-
-ProcessMinidumpResult ProcessMinidump(CompressedSymbolSupplier *symbol_supplier, const std::string &minidump_directory, const std::string &id) {
-  ProcessState process_state;
-  std::string minidump_file = minidump_directory + "/" + id.substr(0, 2) + "/" + id + ".dmp";
-
-  // Create this inside the loop to avoid keeping a global symbol cache.
-  RepoSourceLineResolver resolver;
-  MinidumpProcessor minidump_processor(symbol_supplier, &resolver);
-
-  ProcessResult process_result = minidump_processor.Process(minidump_file, &process_state);
-
-  if (process_result == google_breakpad::PROCESS_ERROR_MINIDUMP_NOT_FOUND) {
-    return PMR_NoFile;
-  }
-
-  if (process_result != google_breakpad::PROCESS_OK) {
-    BPLOG(ERROR) << "MinidumpProcessor::Process failed";
-    return PMR_Failed;
-  }
-
-  int requesting_thread = process_state.requesting_thread();
-
-  // If there is no requesting thread, print the main thread.
-  if (requesting_thread == -1) {
-    requesting_thread = 0;
-  }
-
-  const CallStack *stack = process_state.threads()->at(requesting_thread);
-  if (!stack) {
-    BPLOG(ERROR) << "Missing stack for thread " << requesting_thread;
-    return PMR_Failed;
-  }
-
-  int frame_count = stack->frames()->size();
-  for (int frame_index = 0; frame_index < frame_count; ++frame_index) {
-
-    const StackFrame *frame = stack->frames()->at(frame_index);
-
-    std::cout << frame_index << ": ";
-
-    std::cout << std::hex;
-    if (frame->module) {
-      std::cout << PathnameStripper::File(frame->module->code_file());
-      if (!frame->function_name.empty()) {
-        std::cout << "!" << frame->function_name;
-        if (!frame->source_file_name.empty()) {
-          std::cout << " [" << PathnameStripper::File(frame->source_file_name) << ":" << std::dec << frame->source_line << std::hex << " + 0x" << frame->ReturnAddress() - frame->source_line_base << "]";
-        } else {
-          std::cout << " + 0x" << frame->ReturnAddress() - frame->function_base;
-        }
-      } else {
-        std::cout << " + 0x" << frame->ReturnAddress() - frame->module->base_address();
-      }
-    } else {
-      std::cout << "0x" << frame->ReturnAddress();
-    }
-    std::cout << std::dec;
-
-    std::string repoUrl = resolver.LookupRepoUrl(frame);
-    if (!repoUrl.empty()) {
-      std::cout << " <" << repoUrl << ">";
-    }
-
-    std::cout << std::endl;
-  }
-
-  return PMR_Ok;
-}
-
 int main(int argc, char *argv[]) {
   BPLOG_INIT(&argc, &argv);
 
-  CompressedSymbolSupplier symbol_supplier({
-    "/var/www/breakpad/symbols/sourcemod",
-    "/var/www/breakpad/symbols/valve",
-    "/var/www/breakpad/symbols/microsoft",
-    "/var/www/breakpad/symbols/electron",
-    "/var/www/breakpad/symbols/public",
-  });
-
-  // b4eespvdg7ib viuyixuiz4yb zqpavxes3hhr
-
-  if (argc > 1) {
-    ProcessMinidump(&symbol_supplier, "/var/www/breakpad/dumps", argv[1]);
-    return 0;
+  if (argc <= 1) {
+    std::cerr << "Usage: " << argv[0] << " <config file path>" << std::endl;
+    return 1;
   }
 
-  Client queue(config_beanstalk_host, config_beanstalk_port);
-  queue.watch(config_beanstalk_queue);
-  BPLOG(INFO) << "Connected to beanstalkd @ " << config_beanstalk_host << ":" << config_beanstalk_port << " (queue: " << config_beanstalk_queue << ")";
+  std::ifstream configFile;
+  configFile.open(argv[1]);
+  if (!configFile.is_open()) {
+    std::cerr << "Failed to open config file for reading: " << argv[1] << std::endl;
+    return 1;
+  }
 
-  //Connection mysql(config_mysql_db, config_mysql_host, config_mysql_user, config_mysql_password, config_mysql_port);
-  //BPLOG(INFO) << "Connected to MySQL @ " << mysql.ipc_info();
+  json config;
+  configFile >> config;
+
+  configFile.close();
+
+  const auto &beanstalkHost = config["beanstalk"]["host"];
+  const auto &beanstalkPort = config["beanstalk"]["port"];
+  const auto &beanstalkQueue = config["beanstalk"]["queue"];
+
+  Client queue(beanstalkHost, beanstalkPort);
+  queue.watch(beanstalkQueue);
+
+  BPLOG(INFO) << "Connected to beanstalkd @ " << beanstalkHost << ":" << beanstalkPort << " (queue: " << beanstalkQueue << ")";
+
+  const auto &mysqlHost = config["mysql"]["host"];
+  const auto &mysqlPort = config["mysql"]["port"];
+  const auto &mysqlUser = config["mysql"]["user"];
+  const auto &mysqlPassword = config["mysql"]["password"];
+  const auto &mysqlDatabase = config["mysql"]["database"];
+
+  Connection mysql(
+    mysqlDatabase.get<string>().c_str(),
+    mysqlHost.is_null() ? nullptr :mysqlHost.get<string>().c_str(),
+    mysqlUser.is_null() ? nullptr :mysqlUser.get<string>().c_str(),
+    mysqlPassword.is_null() ? nullptr :mysqlPassword.get<string>().c_str(),
+    mysqlPort);
+
+  BPLOG(INFO) << "Connected to MySQL @ " << mysql.ipc_info() << " (database: " << mysqlDatabase << ")";
+
+  const std::vector<string> &symbolPaths = config["breakpad"]["symbols"];
+  CompressedSymbolSupplier symbolSupplier(symbolPaths);
+
+  const string &minidumpDirectory = config["breakpad"]["minidumps"];
 
   Job job;
   while (true) {
@@ -152,22 +93,83 @@ int main(int argc, char *argv[]) {
       BPLOG(ERROR) << "Failed to reserve job.";
       break;
     }
- 
-    json body = json::parse(job.body());
-    const std::string &id = body["id"];
+
+    const json body = json::parse(job.body());
+    const string &id = body["id"];
     BPLOG(INFO) << id << " " << body["ip"] << " " << body["owner"];
 
     auto start = std::chrono::steady_clock::now();
 
-    ProcessMinidumpResult result = ProcessMinidump(&symbol_supplier, "/var/www/breakpad/dumps", id);
-    if (result != PMR_Ok) {
-      if (result == PMR_NoFile) {
-        queue.del(job);
-      } else {
-        queue.bury(job);
-      }
+    // Create this inside the loop to avoid keeping a global symbol cache.
+    RepoSourceLineResolver resolver;
+    MinidumpProcessor minidumpProcessor(&symbolSupplier, &resolver);
+
+    std::string minidumpFile = minidumpDirectory + "/" + id.substr(0, 2) + "/" + id + ".dmp";
+
+    ProcessState processState;
+    ProcessResult processResult = minidumpProcessor.Process(minidumpFile, &processState);
+
+    if (processResult == google_breakpad::PROCESS_ERROR_MINIDUMP_NOT_FOUND) {
+      queue.del(job);
       continue;
     }
+
+    if (processResult != google_breakpad::PROCESS_OK) {
+      BPLOG(ERROR) << "MinidumpProcessor::Process failed";
+      queue.bury(job);
+      continue;
+    }
+
+    ////////////////////////////////////////////////////////////////////////
+
+    // If there is no requesting thread, print the main thread.
+    int requestingThread = processState.requesting_thread();
+    if (requestingThread == -1) {
+      requestingThread = 0;
+    }
+
+    const CallStack *stack = processState.threads()->at(requestingThread);
+    if (!stack) {
+      BPLOG(ERROR) << "Missing stack for thread " << requestingThread;
+      queue.bury(job);
+      continue;
+    }
+
+    int frameCount = stack->frames()->size();
+    for (int frameIndex = 0; frameIndex < frameCount; ++frameIndex) {
+      const StackFrame *frame = stack->frames()->at(frameIndex);
+
+      std::cout << frameIndex << ": ";
+
+      std::cout << std::hex;
+      if (frame->module) {
+        std::cout << PathnameStripper::File(frame->module->code_file());
+        if (!frame->function_name.empty()) {
+          std::cout << "!" << frame->function_name;
+          if (!frame->source_file_name.empty()) {
+            std::cout << " [" << PathnameStripper::File(frame->source_file_name) << ":" << std::dec << frame->source_line << std::hex << " + 0x" << frame->ReturnAddress() - frame->source_line_base << "]";
+          } else {
+            std::cout << " + 0x" << frame->ReturnAddress() - frame->function_base;
+          }
+        } else {
+          std::cout << " + 0x" << frame->ReturnAddress() - frame->module->base_address();
+        }
+      } else {
+        std::cout << "0x" << frame->ReturnAddress();
+      }
+      std::cout << std::dec;
+
+      std::string repoUrl = resolver.LookupRepoUrl(frame);
+      if (!repoUrl.empty()) {
+        std::cout << " <" << repoUrl << ">";
+      }
+
+      std::cout << std::endl;
+    }
+
+    ////////////////////////////////////////////////////////////////////////
+
+    //__asm__("int3");
 
     auto end = std::chrono::steady_clock::now();
 
@@ -175,6 +177,11 @@ int main(int argc, char *argv[]) {
     std::cout << "Processing Time: " << elapsedSeconds << "s" << std::endl;
 
     queue.del(job);
+
+    bool processSingleJob = config["processSingleJob"];
+    if (processSingleJob) {
+      break;
+    }
   }
 
   return 0;
