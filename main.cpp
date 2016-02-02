@@ -13,6 +13,8 @@
 #include <google_breakpad/processor/process_state.h>
 #include <google_breakpad/processor/call_stack.h>
 #include <google_breakpad/processor/stack_frame.h>
+#include <google_breakpad/processor/code_module.h>
+#include <google_breakpad/processor/system_info.h>
 #include <processor/logging.h>
 #include <processor/pathname_stripper.h>
 
@@ -33,10 +35,146 @@ using google_breakpad::ProcessResult;
 using google_breakpad::CallStack;
 using google_breakpad::StackFrame;
 using google_breakpad::PathnameStripper;
+using google_breakpad::CodeModule;
+using google_breakpad::SystemInfo;
 
 // This really shouldn't be in the google_breakpad namespace.
 using google_breakpad::CompressedSymbolSupplier;
 using google_breakpad::RepoSourceLineResolver;
+
+string RenderFrame(const StackFrame *frame) {
+  std::ostringstream out;
+  out << std::hex;
+  if (frame->module) {
+    out << PathnameStripper::File(frame->module->code_file());
+    if (!frame->function_name.empty()) {
+      out << "!" << frame->function_name;
+      if (!frame->source_file_name.empty()) {
+        out << " [" << PathnameStripper::File(frame->source_file_name) << ":" << std::dec << frame->source_line << std::hex << " + 0x" << frame->ReturnAddress() - frame->source_line_base << "]";
+      } else {
+        out << " + 0x" << frame->ReturnAddress() - frame->function_base;
+      }
+    } else {
+      out << " + 0x" << frame->ReturnAddress() - frame->module->base_address();
+    }
+  } else {
+    out << "0x" << frame->ReturnAddress();
+  }
+  out << std::dec;
+  return out.str();
+}
+
+json SerializeCodeModule(const CodeModule *codeModule) {
+  json body;
+
+  body["base_address"] = codeModule->base_address();
+  body["size"] = codeModule->size();
+  body["code_file"] = codeModule->code_file();
+  if (!codeModule->code_identifier().empty() && codeModule->code_identifier() != "id")
+    body["code_identifier"] = codeModule->code_identifier();
+  body["debug_file"] = codeModule->debug_file();
+  body["debug_identifier"] = codeModule->debug_identifier();
+  if (!codeModule->version().empty())
+    body["version"] = codeModule->version();
+
+  return body;
+}
+
+json SerializeProcessState(const ProcessState *processState, RepoSourceLineResolver *resolver) {
+  json body;
+
+  if (processState->time_date_stamp() != 0)
+    body["time_date_stamp"] = processState->time_date_stamp();
+  if (processState->process_create_time() != 0)
+    body["process_create_time"] = processState->process_create_time();
+  body["crashed"] = processState->crashed();
+  body["crash_reason"] = processState->crash_reason();
+  body["crash_address"] = processState->crash_address();
+  if (!processState->assertion().empty())
+    body["assertion"] = processState->assertion();
+  if (processState->requesting_thread() != -1)
+    body["requesting_thread"] = processState->requesting_thread();
+  if (processState->exploitability() != google_breakpad::EXPLOITABILITY_NOT_ANALYZED)
+    body["exploitability"] = processState->exploitability();
+
+  json threads;
+  for (const CallStack *callStack: *processState->threads()) {
+    json thread;
+    for (const StackFrame *stackFrame: *callStack->frames()) {
+      json frame;
+
+      frame["return_address"] = stackFrame->ReturnAddress();
+      frame["instruction"] = stackFrame->instruction;
+      if (stackFrame->module)
+        frame["module"] = SerializeCodeModule(stackFrame->module);
+      if (!stackFrame->function_name.empty())
+        frame["function_name"] = stackFrame->function_name;
+      if (stackFrame->function_base != 0)
+        frame["function_base"] = stackFrame->function_base;
+      if (!stackFrame->source_file_name.empty())
+        frame["source_file_name"] = stackFrame->source_file_name;
+      if (stackFrame->source_line != 0)
+        frame["source_line"] = stackFrame->source_line;
+      if (stackFrame->source_line_base != 0)
+        frame["source_line_base"] = stackFrame->source_line_base;
+      frame["trust"] = stackFrame->trust;
+      string url = resolver->LookupRepoUrl(stackFrame);
+      if (!url.empty())
+        frame["url"] = url;
+
+      frame["rendered"] = RenderFrame(stackFrame);
+
+      thread.push_back(frame);
+    }
+    threads.push_back(thread);
+  }
+  body["threads"] = threads;
+
+  json systemInfo;
+
+  if (!processState->system_info()->os.empty())
+    systemInfo["os"] = processState->system_info()->os;
+  if (!processState->system_info()->os_short.empty())
+    systemInfo["os_short"] = processState->system_info()->os_short;
+  if (!processState->system_info()->os_version.empty())
+    systemInfo["os_version"] = processState->system_info()->os_version;
+  if (!processState->system_info()->cpu.empty())
+    systemInfo["cpu"] = processState->system_info()->cpu;
+  if (!processState->system_info()->cpu_info.empty())
+    systemInfo["cpu_info"] = processState->system_info()->cpu_info;
+  systemInfo["cpu_count"] = processState->system_info()->cpu_count;
+
+  body["system_info"] = systemInfo;
+
+  if (processState->modules()) {
+    if (processState->modules()->GetMainModule()) {
+      body["main_module"] = SerializeCodeModule(processState->modules()->GetMainModule());
+    }
+
+    json modules;
+    unsigned int module_count = processState->modules()->module_count();
+    for (unsigned int i = 0; i < module_count; ++i) {
+      modules.push_back(SerializeCodeModule(processState->modules()->GetModuleAtIndex(i)));
+    }
+    body["modules"] = modules;
+
+    json modulesWithoutSymbols;
+    for (const CodeModule *codeModule: *processState->modules_without_symbols()) {
+      modulesWithoutSymbols.push_back(SerializeCodeModule(codeModule));
+    }
+    if (modulesWithoutSymbols.is_array())
+      body["modules_without_symbols"] = modulesWithoutSymbols;
+
+    json modulesWithCorruptSymbols;
+    for (const CodeModule *codeModule: *processState->modules_with_corrupt_symbols()) {
+      modulesWithCorruptSymbols.push_back(SerializeCodeModule(codeModule));
+    }
+    if (modulesWithCorruptSymbols.is_array())
+      body["modules_with_corrupt_symbols"] = modulesWithCorruptSymbols;
+  }
+
+  return body;
+}
 
 int main(int argc, char *argv[]) {
   BPLOG_INIT(&argc, &argv);
@@ -122,6 +260,7 @@ int main(int argc, char *argv[]) {
 
     ////////////////////////////////////////////////////////////////////////
 
+#if 0
     // If there is no requesting thread, print the main thread.
     int requestingThread = processState.requesting_thread();
     if (requestingThread == -1) {
@@ -166,6 +305,7 @@ int main(int argc, char *argv[]) {
 
       std::cout << std::endl;
     }
+#endif
 
     ////////////////////////////////////////////////////////////////////////
 
@@ -174,7 +314,16 @@ int main(int argc, char *argv[]) {
     auto end = std::chrono::steady_clock::now();
 
     double elapsedSeconds = ((end - start).count()) * std::chrono::steady_clock::period::num / static_cast<double>(std::chrono::steady_clock::period::den);
-    std::cout << "Processing Time: " << elapsedSeconds << "s" << std::endl;
+    //std::cout << "Processing Time: " << elapsedSeconds << "s" << std::endl;
+
+    json serialized = SerializeProcessState(&processState, &resolver);
+    serialized["id"] = id;
+    if (!body["ip"].is_null())
+      serialized["ip"] = body["ip"];
+    if (!body["owner"].is_null())
+      serialized["owner"] = body["owner"];
+    serialized["processing_time"] = elapsedSeconds;
+    std::cout << serialized << std::endl;
 
     queue.del(job);
 
