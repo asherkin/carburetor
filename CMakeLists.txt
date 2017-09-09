@@ -13,13 +13,13 @@ if (HAS_BURIED_MYSQL)
 else()
   check_include_file_cxx(mysql.h HAS_MYSQL)
   if(NOT HAS_MYSQL)
-    message(SEND_ERROR "Failed to find MySQL C client header.")
+    message(FATAL_ERROR "Failed to find MySQL C client header.")
   endif()
 endif()
 
 check_include_file_cxx(mysql++/mysql++.h HAS_MYSQLPP)
 if(NOT HAS_MYSQLPP)
-  message(SEND_ERROR "Failed to find MySQL++ client header.")
+  message(FATAL_ERROR "Failed to find MySQL++ client header.")
 endif()
 
 ExternalProject_Add(
