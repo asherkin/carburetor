@@ -1,10 +1,10 @@
-cmake_minimum_required(VERSION 2.8.0)
+cmake_minimum_required(VERSION 3.1.0)
 project(carburetor)
 
 include(ExternalProject)
 include(CheckIncludeFileCXX)
 
-list(APPEND CMAKE_CXX_FLAGS "-std=c++11")
+set(CMAKE_CXX_STANDARD 14)
 
 check_include_file_cxx(mysql/mysql.h HAS_BURIED_MYSQL)
 if (HAS_BURIED_MYSQL)

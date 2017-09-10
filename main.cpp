@@ -1,6 +1,7 @@
 #include <iostream>
 #include <fstream>
 #include <chrono>
+#include <memory>
 
 #include <beanstalk.hpp>
 
@@ -37,6 +38,8 @@ using google_breakpad::StackFrame;
 using google_breakpad::PathnameStripper;
 using google_breakpad::CodeModule;
 using google_breakpad::SystemInfo;
+using google_breakpad::MinidumpThreadList;
+using google_breakpad::MinidumpMemoryList;
 
 // This really shouldn't be in the google_breakpad namespace.
 using google_breakpad::CompressedSymbolSupplier;
@@ -180,7 +183,7 @@ int main(int argc, char *argv[]) {
   BPLOG_INIT(&argc, &argv);
 
   if (argc <= 1) {
-    std::cerr << "Usage: " << argv[0] << " <config file path>" << std::endl;
+    std::cerr << "Usage: " << argv[0] << " <config file path> [minidump]" << std::endl;
     return 1;
   }
 
@@ -196,45 +199,76 @@ int main(int argc, char *argv[]) {
 
   configFile.close();
 
-  const auto &beanstalkHost = config["beanstalk"]["host"];
-  const auto &beanstalkPort = config["beanstalk"]["port"];
-  const auto &beanstalkQueue = config["beanstalk"]["queue"];
+  std::unique_ptr<Client> queue = nullptr;
+  std::unique_ptr<Connection> mysql = nullptr;
 
-  Client queue(beanstalkHost, beanstalkPort);
-  queue.watch(beanstalkQueue);
+  if (argc <= 2) {
+    const auto &beanstalkHost = config["beanstalk"]["host"];
+    const auto &beanstalkPort = config["beanstalk"]["port"];
+    const auto &beanstalkQueue = config["beanstalk"]["queue"];
 
-  BPLOG(INFO) << "Connected to beanstalkd @ " << beanstalkHost << ":" << beanstalkPort << " (queue: " << beanstalkQueue << ")";
+    queue = std::make_unique<Client>(beanstalkHost, beanstalkPort);
+    queue->watch(beanstalkQueue);
 
-  const auto &mysqlHost = config["mysql"]["host"];
-  const auto &mysqlPort = config["mysql"]["port"];
-  const auto &mysqlUser = config["mysql"]["user"];
-  const auto &mysqlPassword = config["mysql"]["password"];
-  const auto &mysqlDatabase = config["mysql"]["database"];
+    BPLOG(INFO) << "Connected to beanstalkd @ " << beanstalkHost << ":" << beanstalkPort << " (queue: " << beanstalkQueue << ")";
+  }
 
-  Connection mysql(
-    mysqlDatabase.get<string>().c_str(),
-    mysqlHost.is_null() ? nullptr :mysqlHost.get<string>().c_str(),
-    mysqlUser.is_null() ? nullptr :mysqlUser.get<string>().c_str(),
-    mysqlPassword.is_null() ? nullptr :mysqlPassword.get<string>().c_str(),
-    mysqlPort);
+  if (argc <= 2) {
+    const auto &mysqlHost = config["mysql"]["host"];
+    const auto &mysqlPort = config["mysql"]["port"];
+    const auto &mysqlUser = config["mysql"]["user"];
+    const auto &mysqlPassword = config["mysql"]["password"];
+    const auto &mysqlDatabase = config["mysql"]["database"];
 
-  BPLOG(INFO) << "Connected to MySQL @ " << mysql.ipc_info() << " (database: " << mysqlDatabase << ")";
+    mysql = std::make_unique<Connection>(
+      mysqlDatabase.get<string>().c_str(),
+      mysqlHost.is_null() ? nullptr :mysqlHost.get<string>().c_str(),
+      mysqlUser.is_null() ? nullptr :mysqlUser.get<string>().c_str(),
+      mysqlPassword.is_null() ? nullptr :mysqlPassword.get<string>().c_str(),
+      mysqlPort);
+
+    BPLOG(INFO) << "Connected to MySQL @ " << mysql->ipc_info() << " (database: " << mysqlDatabase << ")";
+  }
+
+  MinidumpThreadList::set_max_threads(std::numeric_limits<uint32_t>::max());
+  MinidumpMemoryList::set_max_regions(std::numeric_limits<uint32_t>::max());
 
   const std::vector<string> &symbolPaths = config["breakpad"]["symbols"];
   CompressedSymbolSupplier symbolSupplier(symbolPaths);
 
-  const string &minidumpDirectory = config["breakpad"]["minidumps"];
-
   Job job;
   while (true) {
-    if (!queue.reserve(job) || !job) {
-      BPLOG(ERROR) << "Failed to reserve job.";
-      break;
+    std::string minidumpFile;
+
+    if (queue) {
+      if (!queue->reserve(job) || !job) {
+        BPLOG(ERROR) << "Failed to reserve job.";
+        break;
+      }
+
+      const json body = json::parse(job.body());
+      const string &id = body["id"];
+      BPLOG(INFO) << id << " " << body["ip"] << " " << body["owner"];
+
+      const string &minidumpDirectory = config["breakpad"]["minidumps"];
+      minidumpFile = minidumpDirectory + "/" + id.substr(0, 2) + "/" + id + ".dmp";
+    } else {
+      minidumpFile = argv[2];
     }
 
-    const json body = json::parse(job.body());
-    const string &id = body["id"];
-    BPLOG(INFO) << id << " " << body["ip"] << " " << body["owner"];
+    // The MinidumpProcessor::Process that takes a path has a use-after-free bug.
+    BPLOG(INFO) << "Processing minidump in file " << minidumpFile;
+
+    Minidump minidump(minidumpFile);
+    if (!minidump.Read()) {
+      BPLOG(ERROR) << "Minidump " << minidump.path() << " could not be read";
+
+      if (queue) {
+        queue->del(job);
+      }
+
+      continue;
+    }
 
     auto start = std::chrono::steady_clock::now();
 
@@ -242,19 +276,16 @@ int main(int argc, char *argv[]) {
     RepoSourceLineResolver resolver;
     MinidumpProcessor minidumpProcessor(&symbolSupplier, &resolver);
 
-    std::string minidumpFile = minidumpDirectory + "/" + id.substr(0, 2) + "/" + id + ".dmp";
-
     ProcessState processState;
-    ProcessResult processResult = minidumpProcessor.Process(minidumpFile, &processState);
-
-    if (processResult == google_breakpad::PROCESS_ERROR_MINIDUMP_NOT_FOUND) {
-      queue.del(job);
-      continue;
-    }
+    ProcessResult processResult = minidumpProcessor.Process(&minidump, &processState);
 
     if (processResult != google_breakpad::PROCESS_OK) {
       BPLOG(ERROR) << "MinidumpProcessor::Process failed";
-      queue.bury(job);
+
+      if (queue) {
+        queue->bury(job);
+      }
+
       continue;
     }
 
@@ -270,7 +301,7 @@ int main(int argc, char *argv[]) {
     const CallStack *stack = processState.threads()->at(requestingThread);
     if (!stack) {
       BPLOG(ERROR) << "Missing stack for thread " << requestingThread;
-      queue.bury(job);
+      queue->bury(job);
       continue;
     }
 
@@ -317,18 +348,22 @@ int main(int argc, char *argv[]) {
     //std::cout << "Processing Time: " << elapsedSeconds << "s" << std::endl;
 
     json serialized = SerializeProcessState(&processState, &resolver);
-    serialized["id"] = id;
+    /*serialized["id"] = id;
     if (!body["ip"].is_null())
       serialized["ip"] = body["ip"];
     if (!body["owner"].is_null())
-      serialized["owner"] = body["owner"];
+      serialized["owner"] = body["owner"];*/
     serialized["processing_time"] = elapsedSeconds;
     std::cout << serialized << std::endl;
 
-    queue.del(job);
+    if (queue) {
+      queue->del(job);
 
-    bool processSingleJob = config["processSingleJob"];
-    if (processSingleJob) {
+      bool processSingleJob = config["processSingleJob"];
+      if (processSingleJob) {
+        break;
+      }
+    } else {
       break;
     }
   }
