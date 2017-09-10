@@ -63,9 +63,21 @@ ExternalProject_Add(
 ExternalProject_Get_Property(json SOURCE_DIR)
 set(JSON_INCLUDE_DIRS ${SOURCE_DIR}/src)
 
+ExternalProject_Add(
+  codec
+  GIT_REPOSITORY https://github.com/tplgy/cppcodec.git
+  CONFIGURE_COMMAND ""
+  BUILD_COMMAND ""
+  BUILD_IN_SOURCE 1
+  INSTALL_COMMAND ""
+)
+
+ExternalProject_Get_Property(codec SOURCE_DIR)
+set(CODEC_INCLUDE_DIRS ${SOURCE_DIR}/cppcodec)
+
 find_package(ZLIB REQUIRED)
 
 add_executable(${PROJECT_NAME} main.cpp compressed_symbol_supplier.cpp repo_source_line_resolver.cc)
-add_dependencies(${PROJECT_NAME} beanstalk breakpad json)
-target_include_directories(${PROJECT_NAME} PRIVATE ${BEANSTALK_INCLUDE_DIRS} ${BREAKPAD_INCLUDE_DIRS} ${JSON_INCLUDE_DIRS} ${ZLIB_INCLUDE_DIRS})
+add_dependencies(${PROJECT_NAME} beanstalk breakpad json codec)
+target_include_directories(${PROJECT_NAME} PRIVATE ${BEANSTALK_INCLUDE_DIRS} ${BREAKPAD_INCLUDE_DIRS} ${JSON_INCLUDE_DIRS} ${CODEC_INCLUDE_DIRS} ${ZLIB_INCLUDE_DIRS})
 target_link_libraries(${PROJECT_NAME} PRIVATE mysqlpp ${BEANSTALK_LIBRARIES} ${BREAKPAD_LIBRARIES} ${ZLIB_LIBRARIES})
