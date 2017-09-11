@@ -46,6 +46,7 @@ using google_breakpad::SystemInfo;
 using google_breakpad::MemoryRegion;
 using google_breakpad::MinidumpThreadList;
 using google_breakpad::MinidumpMemoryList;
+using google_breakpad::MinidumpMemoryRegion;
 
 // This really shouldn't be in the google_breakpad namespace.
 using google_breakpad::CompressedSymbolSupplier;
@@ -139,7 +140,7 @@ json SerializeCodeModule(const CodeModule *codeModule) {
   return body;
 }
 
-json SerializeProcessState(const ProcessState *processState, RepoSourceLineResolver *resolver) {
+json SerializeProcessState(Minidump *minidump, const ProcessState *processState, RepoSourceLineResolver *resolver) {
   json body;
 
   if (processState->time_date_stamp() != 0)
@@ -185,12 +186,14 @@ json SerializeProcessState(const ProcessState *processState, RepoSourceLineResol
 
       const string &cpu = processState->system_info()->cpu;
 
+      uint64_t instructionPtr = 0;
+
       if (cpu == "x86") {
         json registers;
         const StackFrameX86 *frame_x86 = reinterpret_cast<const StackFrameX86*>(stackFrame);
 
         if (frame_x86->context_validity & StackFrameX86::CONTEXT_VALID_EIP)
-          registers["eip"] = frame_x86->context.eip;
+          registers["eip"] = instructionPtr = frame_x86->context.eip;
         if (frame_x86->context_validity & StackFrameX86::CONTEXT_VALID_ESP)
           registers["esp"] = frame_x86->context.esp;
         if (frame_x86->context_validity & StackFrameX86::CONTEXT_VALID_EBP)
@@ -246,9 +249,27 @@ json SerializeProcessState(const ProcessState *processState, RepoSourceLineResol
         if (frame_amd64->context_validity & StackFrameAMD64::CONTEXT_VALID_R15)
           registers["r15"] = frame_amd64->context.r15;
         if (frame_amd64->context_validity & StackFrameAMD64::CONTEXT_VALID_RIP)
-          registers["rip"] = frame_amd64->context.rip;
+          registers["rip"] = instructionPtr = frame_amd64->context.rip;
 
         frame["registers"] = registers;
+      }
+
+      // objdump -D -b binary -m i386 -M intel opcodes.bin
+      if (instructionPtr != 0) {
+        MinidumpMemoryList *memoryList = minidump->GetMemoryList();
+        if (memoryList) {
+          MinidumpMemoryRegion *instructionRegion = memoryList->GetMemoryRegionForAddress(instructionPtr);
+          if (instructionRegion) {
+            json code;
+
+            code["base_address"] = instructionRegion->GetBase();
+            code["size"] = instructionRegion->GetSize();
+            code["instruction_pointer"] = instructionPtr;
+            code["opcodes"] = base64::encode(instructionRegion->GetMemory(), instructionRegion->GetSize());
+
+            frame["code"] = code;
+          }
+        }
       }
 
       size_t callingFrameIndex = thread.size() + 1;
@@ -480,7 +501,7 @@ int main(int argc, char *argv[]) {
     double elapsedSeconds = ((end - start).count()) * std::chrono::steady_clock::period::num / static_cast<double>(std::chrono::steady_clock::period::den);
     //std::cout << "Processing Time: " << elapsedSeconds << "s" << std::endl;
 
-    json serialized = SerializeProcessState(&processState, &resolver);
+    json serialized = SerializeProcessState(&minidump, &processState, &resolver);
     /*serialized["id"] = id;
     if (!body["ip"].is_null())
       serialized["ip"] = body["ip"];
