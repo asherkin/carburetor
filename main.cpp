@@ -9,6 +9,8 @@
 
 #include <base64_default_rfc4648.hpp>
 
+#include <distorm.h>
+
 #include <mysql++/mysql++.h>
 
 #include <google_breakpad/processor/minidump.h>
@@ -46,6 +48,8 @@ using google_breakpad::SystemInfo;
 using google_breakpad::MemoryRegion;
 using google_breakpad::MinidumpThreadList;
 using google_breakpad::MinidumpMemoryList;
+using google_breakpad::MinidumpException;
+using google_breakpad::MinidumpContext;
 using google_breakpad::MinidumpMemoryRegion;
 
 // This really shouldn't be in the google_breakpad namespace.
@@ -157,6 +161,8 @@ json SerializeProcessState(Minidump *minidump, const ProcessState *processState,
   if (processState->exploitability() != google_breakpad::EXPLOITABILITY_NOT_ANALYZED)
     body["exploitability"] = processState->exploitability();
 
+  const string &cpu = processState->system_info()->cpu;
+
   json threads;
   for (const CallStack *callStack: *processState->threads()) {
     json thread;
@@ -184,16 +190,12 @@ json SerializeProcessState(Minidump *minidump, const ProcessState *processState,
 
       frame["rendered"] = RenderFrame(stackFrame);
 
-      const string &cpu = processState->system_info()->cpu;
-
-      uint64_t instructionPtr = 0;
-
       if (cpu == "x86") {
         json registers;
         const StackFrameX86 *frame_x86 = reinterpret_cast<const StackFrameX86*>(stackFrame);
 
         if (frame_x86->context_validity & StackFrameX86::CONTEXT_VALID_EIP)
-          registers["eip"] = instructionPtr = frame_x86->context.eip;
+          registers["eip"] = frame_x86->context.eip;
         if (frame_x86->context_validity & StackFrameX86::CONTEXT_VALID_ESP)
           registers["esp"] = frame_x86->context.esp;
         if (frame_x86->context_validity & StackFrameX86::CONTEXT_VALID_EBP)
@@ -249,11 +251,12 @@ json SerializeProcessState(Minidump *minidump, const ProcessState *processState,
         if (frame_amd64->context_validity & StackFrameAMD64::CONTEXT_VALID_R15)
           registers["r15"] = frame_amd64->context.r15;
         if (frame_amd64->context_validity & StackFrameAMD64::CONTEXT_VALID_RIP)
-          registers["rip"] = instructionPtr = frame_amd64->context.rip;
+          registers["rip"] = frame_amd64->context.rip;
 
         frame["registers"] = registers;
       }
 
+      /*
       // objdump -D -b binary -m i386 -M intel opcodes.bin
       if (instructionPtr != 0) {
         MinidumpMemoryList *memoryList = minidump->GetMemoryList();
@@ -267,10 +270,30 @@ json SerializeProcessState(Minidump *minidump, const ProcessState *processState,
             code["instruction_pointer"] = instructionPtr;
             code["opcodes"] = base64::encode(instructionRegion->GetMemory(), instructionRegion->GetSize());
 
+            {
+              constexpr size_t MAX_INSTRUCTIONS = 4096;
+              _OffsetType offset = instructionRegion->GetBase();
+              _DecodedInst decodedInstructions[MAX_INSTRUCTIONS];
+              unsigned int decodedInstructionsCount = 0;
+              _DecodeType dt = (cpu == "amd64") ? Decode64Bits : Decode32Bits;
+              _DecodeResult res = distorm_decode(offset, instructionRegion->GetMemory(), instructionRegion->GetSize(), dt, decodedInstructions, MAX_INSTRUCTIONS, &decodedInstructionsCount);
+
+              for (unsigned int i = 0; i < decodedInstructionsCount; i++) {
+                printf("%0*llx %-44s %s%s%s", (dt == Decode64Bits) ? 16 : 8, decodedInstructions[i].offset, (char *)decodedInstructions[i].instructionHex.p, (char *)decodedInstructions[i].mnemonic.p, (decodedInstructions[i].operands.length != 0) ? " " : "", (char *)decodedInstructions[i].operands.p);
+
+                if (decodedInstructions[i].offset == instructionPtr) {
+                  printf(" <<< EXECUTING HERE");
+                }
+
+                printf("\n");
+              }
+            }
+
             frame["code"] = code;
           }
         }
       }
+      */
 
       size_t callingFrameIndex = thread.size() + 1;
       if (callingFrameIndex < callStack->frames()->size()) {
@@ -328,6 +351,76 @@ json SerializeProcessState(Minidump *minidump, const ProcessState *processState,
     }
     if (modulesWithCorruptSymbols.is_array())
       body["modules_with_corrupt_symbols"] = modulesWithCorruptSymbols;
+  }
+
+  MinidumpException *exception = minidump->GetException();
+  if (exception) {
+    const MinidumpContext *context = exception->GetContext();
+    if (context) {
+      uint64_t instructionPtr = 0;
+      if (context->GetInstructionPointer(&instructionPtr)) {
+        MinidumpMemoryList *memoryList = minidump->GetMemoryList();
+        if (memoryList) {
+          MinidumpMemoryRegion *instructionRegion = memoryList->GetMemoryRegionForAddress(instructionPtr);
+          if (instructionRegion) {
+            json exceptionInfo;
+
+            exceptionInfo["base_address"] = instructionRegion->GetBase();
+            exceptionInfo["size"] = instructionRegion->GetSize();
+            exceptionInfo["instruction_pointer"] = instructionPtr;
+            //exceptionInfo["opcodes"] = base64::encode(instructionRegion->GetMemory(), instructionRegion->GetSize());
+
+            if (processState->modules()) {
+              const CodeModule *module = processState->modules()->GetModuleForAddress(instructionPtr);
+              if (module) {
+                exceptionInfo["module"] = SerializeCodeModule(module);
+              }
+            }
+
+            {
+              json opcodes;
+
+              const uint8_t *instructionMemory = instructionRegion->GetMemory();
+              size_t instructionMemorySize = instructionRegion->GetSize();
+
+              constexpr size_t MAX_INSTRUCTIONS = 256;
+              _OffsetType offset = instructionRegion->GetBase();
+              _DecodedInst decodedInstructions[MAX_INSTRUCTIONS];
+              unsigned int decodedInstructionsCount = 0;
+              _DecodeType dt = (cpu == "amd64") ? Decode64Bits : Decode32Bits;
+              _DecodeResult res = distorm_decode(offset, instructionMemory, instructionMemorySize, dt, decodedInstructions, MAX_INSTRUCTIONS, &decodedInstructionsCount);
+
+              for (unsigned int i = 0; i < decodedInstructionsCount; ++i) {
+                // Ignore 3 instructions at the start and and, to avoid synchronization issues.
+                if (i < 3 || i >= (decodedInstructionsCount - 3)) {
+                  continue;
+                }
+
+                std::string hex = (char *)decodedInstructions[i].instructionHex.p;
+                std::string mnemonic = (char *)decodedInstructions[i].mnemonic.p;
+
+                if (decodedInstructions[i].operands.length != 0) {
+                  mnemonic.append(" ");
+                  mnemonic.append((char *)decodedInstructions[i].operands.p);
+                }
+
+                std::transform(mnemonic.begin(), mnemonic.end(), mnemonic.begin(), ::tolower);
+
+                json opcode;
+		opcode["offset"] = decodedInstructions[i].offset;
+                opcode["hex"] = hex;
+                opcode["mnemonic"] = mnemonic;
+                opcodes.push_back(opcode);
+              }
+
+              exceptionInfo["opcodes"] = opcodes;
+            }
+
+            body["exception"] = exceptionInfo;
+          }
+        }
+      }
+    }
   }
 
   return body;
