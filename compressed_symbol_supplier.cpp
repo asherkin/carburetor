@@ -87,53 +87,36 @@ SymbolSupplier::SymbolResult CompressedSymbolSupplier::GetSymbolFile(
   assert(symbol_data);
   symbol_data->clear();
 
-  SymbolSupplier::SymbolResult s = GetSymbolFile(module, system_info,
-                                                 symbol_file);
+  SymbolSupplier::SymbolResult s = GetSymbolFile(module, system_info, symbol_file);
+
   if (s == FOUND) {
-    //std::ifstream in(symbol_file->c_str(), std::ios::binary);
-    //std::getline(in, *symbol_data, string::traits_type::to_char_type(
-    //                 string::traits_type::eof()));
-    //in.close();
+    string symbol_file_extension;
+    if (symbol_file->size() > 3)
+      symbol_file_extension = symbol_file->substr(symbol_file->size() - 3);
 
-    //const unsigned char *c = (const unsigned char *)symbol_data->data();
-    //std::cout << *symbol_file << " " << std::hex << (int)c[symbol_data->size() - 1] << std::dec << std::endl;
+    if (symbol_file_extension == ".gz") {
+      int symbol_fd = open(symbol_file->c_str(), O_RDONLY);
 
-    /////////////////////////////////////
+      lseek(symbol_fd, -4, SEEK_END);
 
-    //std::ifstream in(symbol_file->c_str(), std::ios::binary);
-    //std::vector<char> buffer((std::istreambuf_iterator<char>(in)), (std::istreambuf_iterator<char>()));
-    //in.close();
+      uint32_t uncompressed_length;
+      read(symbol_fd, &uncompressed_length, sizeof(uncompressed_length));
 
-    //size_t uncompressed_length = *(uint32_t *)&buffer[buffer.size() - 4];
-    //std::cout << *symbol_file << " " << uncompressed_length;
+      lseek(symbol_fd, 0, SEEK_SET);
 
-    //symbol_data->resize(uncompressed_length);
-    //size_t actual_length = symbol_data->size();
-    //int ret = uncompress((unsigned char *)&(*symbol_data)[0], &actual_length, (unsigned char *)&buffer[0], buffer.size());
-    //std::cout << " " << actual_length << " " << ret << std::endl;
+      auto symbol_gz_file = gzdopen(symbol_fd, "rb");
 
-    int symbol_fd = open(symbol_file->c_str(), O_RDONLY);
+      symbol_data->resize(uncompressed_length);
+      size_t actual_length = gzread(symbol_gz_file, &(*symbol_data)[0], symbol_data->size());
 
-    lseek(symbol_fd, -4, SEEK_END);
-
-    uint32_t uncompressed_length;
-    read(symbol_fd, &uncompressed_length, sizeof(uncompressed_length));
-
-    //std::cout << *symbol_file << " " << uncompressed_length;
-
-    lseek(symbol_fd, 0, SEEK_SET);
-
-    auto symbol_gz_file = gzdopen(symbol_fd, "rb");
-
-    symbol_data->resize(uncompressed_length);
-    size_t actual_length = gzread(symbol_gz_file, &(*symbol_data)[0], symbol_data->size());
-
-    //std::cout << " " << actual_length << std::endl;
-
-    gzclose_r(symbol_gz_file);
-
-    /////////////////////////////////////
+      gzclose_r(symbol_gz_file);
+    } else {
+      std::ifstream in(symbol_file->c_str());
+      std::getline(in, *symbol_data, string::traits_type::to_char_type(string::traits_type::eof()));
+      in.close();
+    }
   }
+
   return s;
 }
 
@@ -226,21 +209,34 @@ SymbolSupplier::SymbolResult CompressedSymbolSupplier::GetSymbolFileAtPathFromRo
   if (debug_file_name.size() > 4)
     debug_file_extension = debug_file_name.substr(debug_file_name.size() - 4);
   std::transform(debug_file_extension.begin(), debug_file_extension.end(),
-                 debug_file_extension.begin(), tolower);
+                 debug_file_extension.begin(), ::tolower);
   if (debug_file_extension == ".pdb") {
     path.append(debug_file_name.substr(0, debug_file_name.size() - 4));
   } else {
     path.append(debug_file_name);
   }
-  path.append(".sym.gz");
+  path.append(".sym");
 
-  if (!file_exists(path)) {
-    BPLOG(INFO) << "No symbol file at " << path;
-    return NOT_FOUND;
+  string uncompressed_path = path;
+
+  path.append(".gz");
+
+  if (file_exists(path)) {
+    BPLOG(INFO) << "Found compressed symbol file at " << path;
+    *symbol_file = path;
+    return FOUND;
   }
 
-  *symbol_file = path;
-  return FOUND;
+  path = uncompressed_path;
+
+  if (file_exists(path)) {
+    BPLOG(INFO) << "Found symbol file at " << path;
+    *symbol_file = path;
+    return FOUND;
+  }
+
+  BPLOG(INFO) << "No symbol file at " << path;
+  return NOT_FOUND;
 }
 
 }  // namespace google_breakpad

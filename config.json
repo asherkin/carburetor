@@ -14,6 +14,7 @@
   "breakpad": {
     "minidumps": "/home/asherkin/breakpad-dumps",
     "symbols": [
+      "/home/asherkin/breakpad-symbol-cache",
       "/home/asherkin/breakpad-symbols/sourcemod",
       "/home/asherkin/breakpad-symbols/valve",
       "/home/asherkin/breakpad-symbols/microsoft",
