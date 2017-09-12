@@ -147,6 +147,9 @@ json SerializeCodeModule(const CodeModule *codeModule) {
 json SerializeProcessState(Minidump *minidump, const ProcessState *processState, RepoSourceLineResolver *resolver) {
   json body;
 
+  MinidumpMemoryList *memoryList = minidump->GetMemoryList();
+  const string &cpu = processState->system_info()->cpu;
+
   if (processState->time_date_stamp() != 0)
     body["time_date_stamp"] = processState->time_date_stamp();
   if (processState->process_create_time() != 0)
@@ -160,8 +163,6 @@ json SerializeProcessState(Minidump *minidump, const ProcessState *processState,
     body["requesting_thread"] = processState->requesting_thread();
   if (processState->exploitability() != google_breakpad::EXPLOITABILITY_NOT_ANALYZED)
     body["exploitability"] = processState->exploitability();
-
-  const string &cpu = processState->system_info()->cpu;
 
   json threads;
   for (const CallStack *callStack: *processState->threads()) {
@@ -190,12 +191,14 @@ json SerializeProcessState(Minidump *minidump, const ProcessState *processState,
 
       frame["rendered"] = RenderFrame(stackFrame);
 
+      uint64_t instructionPtr = 0;
+
       if (cpu == "x86") {
         json registers;
         const StackFrameX86 *frame_x86 = reinterpret_cast<const StackFrameX86*>(stackFrame);
 
         if (frame_x86->context_validity & StackFrameX86::CONTEXT_VALID_EIP)
-          registers["eip"] = frame_x86->context.eip;
+          registers["eip"] = instructionPtr = frame_x86->context.eip;
         if (frame_x86->context_validity & StackFrameX86::CONTEXT_VALID_ESP)
           registers["esp"] = frame_x86->context.esp;
         if (frame_x86->context_validity & StackFrameX86::CONTEXT_VALID_EBP)
@@ -251,49 +254,69 @@ json SerializeProcessState(Minidump *minidump, const ProcessState *processState,
         if (frame_amd64->context_validity & StackFrameAMD64::CONTEXT_VALID_R15)
           registers["r15"] = frame_amd64->context.r15;
         if (frame_amd64->context_validity & StackFrameAMD64::CONTEXT_VALID_RIP)
-          registers["rip"] = frame_amd64->context.rip;
+          registers["rip"] = instructionPtr = frame_amd64->context.rip;
 
         frame["registers"] = registers;
       }
 
-      /*
-      // objdump -D -b binary -m i386 -M intel opcodes.bin
-      if (instructionPtr != 0) {
-        MinidumpMemoryList *memoryList = minidump->GetMemoryList();
-        if (memoryList) {
-          MinidumpMemoryRegion *instructionRegion = memoryList->GetMemoryRegionForAddress(instructionPtr);
-          if (instructionRegion) {
-            json code;
+      if (instructionPtr != 0 && memoryList) {
+        MinidumpMemoryRegion *instructionRegion = memoryList->GetMemoryRegionForAddress(instructionPtr);
+        if (instructionRegion) {
+          uint64_t instructionMemoryBase = instructionRegion->GetBase();
+          const uint8_t *instructionMemory = instructionRegion->GetMemory();
+          size_t instructionMemorySize = instructionRegion->GetSize();
 
-            code["base_address"] = instructionRegion->GetBase();
-            code["size"] = instructionRegion->GetSize();
-            code["instruction_pointer"] = instructionPtr;
-            code["opcodes"] = base64::encode(instructionRegion->GetMemory(), instructionRegion->GetSize());
+          uint64_t instructionLocalOffset = instructionPtr - instructionMemoryBase;
+          if (instructionLocalOffset > 128) {
+            uint64_t localOffsetDiff = instructionLocalOffset - 128;
+            instructionMemoryBase += localOffsetDiff;
+            instructionMemory += localOffsetDiff;
+            instructionMemorySize -= localOffsetDiff;
+          }
 
-            {
-              constexpr size_t MAX_INSTRUCTIONS = 4096;
-              _OffsetType offset = instructionRegion->GetBase();
-              _DecodedInst decodedInstructions[MAX_INSTRUCTIONS];
-              unsigned int decodedInstructionsCount = 0;
-              _DecodeType dt = (cpu == "amd64") ? Decode64Bits : Decode32Bits;
-              _DecodeResult res = distorm_decode(offset, instructionRegion->GetMemory(), instructionRegion->GetSize(), dt, decodedInstructions, MAX_INSTRUCTIONS, &decodedInstructionsCount);
+          instructionLocalOffset = (instructionMemoryBase + instructionMemorySize) - instructionPtr;
+          if (instructionLocalOffset > 128) {
+            uint64_t localOffsetDiff = instructionLocalOffset - 128;
+            instructionMemorySize -= localOffsetDiff;
+          }
 
-              for (unsigned int i = 0; i < decodedInstructionsCount; i++) {
-                printf("%0*llx %-44s %s%s%s", (dt == Decode64Bits) ? 16 : 8, decodedInstructions[i].offset, (char *)decodedInstructions[i].instructionHex.p, (char *)decodedInstructions[i].mnemonic.p, (decodedInstructions[i].operands.length != 0) ? " " : "", (char *)decodedInstructions[i].operands.p);
+          // objdump -D -b binary -m i386 -M intel opcodes.bin
+          // frame["instructions_raw"] = base64::encode(instructionMemory, instructionMemorySize);
 
-                if (decodedInstructions[i].offset == instructionPtr) {
-                  printf(" <<< EXECUTING HERE");
-                }
+          json instructions;
 
-                printf("\n");
-              }
+          constexpr size_t MAX_INSTRUCTIONS = 256;
+          _DecodedInst decodedInstructions[MAX_INSTRUCTIONS];
+          unsigned int decodedInstructionsCount = 0;
+          _DecodeType dt = (cpu == "amd64") ? Decode64Bits : Decode32Bits;
+          _DecodeResult res = distorm_decode(instructionMemoryBase, instructionMemory, instructionMemorySize, dt, decodedInstructions, MAX_INSTRUCTIONS, &decodedInstructionsCount);
+
+          for (unsigned int i = 0; i < decodedInstructionsCount; ++i) {
+            // Ignore 3 instructions at the start and and, to avoid synchronization issues.
+            if (i < 3 || i >= (decodedInstructionsCount - 3)) {
+              continue;
             }
 
-            frame["code"] = code;
+            std::string hex = (char *)decodedInstructions[i].instructionHex.p;
+            std::string mnemonic = (char *)decodedInstructions[i].mnemonic.p;
+
+            if (decodedInstructions[i].operands.length != 0) {
+              mnemonic.append(" ");
+              mnemonic.append((char *)decodedInstructions[i].operands.p);
+            }
+
+            std::transform(mnemonic.begin(), mnemonic.end(), mnemonic.begin(), ::tolower);
+
+            json opcode;
+            opcode["offset"] = decodedInstructions[i].offset;
+            opcode["hex"] = hex;
+            opcode["mnemonic"] = mnemonic;
+            instructions.push_back(opcode);
           }
+
+          frame["instructions"] = instructions;
         }
       }
-      */
 
       size_t callingFrameIndex = thread.size() + 1;
       if (callingFrameIndex < callStack->frames()->size()) {
@@ -353,74 +376,21 @@ json SerializeProcessState(Minidump *minidump, const ProcessState *processState,
       body["modules_with_corrupt_symbols"] = modulesWithCorruptSymbols;
   }
 
-  MinidumpException *exception = minidump->GetException();
-  if (exception) {
-    const MinidumpContext *context = exception->GetContext();
-    if (context) {
-      uint64_t instructionPtr = 0;
-      if (context->GetInstructionPointer(&instructionPtr)) {
-        MinidumpMemoryList *memoryList = minidump->GetMemoryList();
-        if (memoryList) {
-          MinidumpMemoryRegion *instructionRegion = memoryList->GetMemoryRegionForAddress(instructionPtr);
-          if (instructionRegion) {
-            json exceptionInfo;
+  if (memoryList) {
+    json memory;
 
-            exceptionInfo["base_address"] = instructionRegion->GetBase();
-            exceptionInfo["size"] = instructionRegion->GetSize();
-            exceptionInfo["instruction_pointer"] = instructionPtr;
-            //exceptionInfo["opcodes"] = base64::encode(instructionRegion->GetMemory(), instructionRegion->GetSize());
+    for (size_t i = 0; i < memoryList->region_count(); ++i) {
+      MinidumpMemoryRegion *memoryRegion = memoryList->GetMemoryRegionAtIndex(i);
 
-            if (processState->modules()) {
-              const CodeModule *module = processState->modules()->GetModuleForAddress(instructionPtr);
-              if (module) {
-                exceptionInfo["module"] = SerializeCodeModule(module);
-              }
-            }
+      json region;
+      region["base"] = memoryRegion->GetBase();
+      region["size"] = memoryRegion->GetSize();
+      region["data"] = base64::encode(memoryRegion->GetMemory(), memoryRegion->GetSize());
 
-            {
-              json opcodes;
-
-              const uint8_t *instructionMemory = instructionRegion->GetMemory();
-              size_t instructionMemorySize = instructionRegion->GetSize();
-
-              constexpr size_t MAX_INSTRUCTIONS = 256;
-              _OffsetType offset = instructionRegion->GetBase();
-              _DecodedInst decodedInstructions[MAX_INSTRUCTIONS];
-              unsigned int decodedInstructionsCount = 0;
-              _DecodeType dt = (cpu == "amd64") ? Decode64Bits : Decode32Bits;
-              _DecodeResult res = distorm_decode(offset, instructionMemory, instructionMemorySize, dt, decodedInstructions, MAX_INSTRUCTIONS, &decodedInstructionsCount);
-
-              for (unsigned int i = 0; i < decodedInstructionsCount; ++i) {
-                // Ignore 3 instructions at the start and and, to avoid synchronization issues.
-                if (i < 3 || i >= (decodedInstructionsCount - 3)) {
-                  continue;
-                }
-
-                std::string hex = (char *)decodedInstructions[i].instructionHex.p;
-                std::string mnemonic = (char *)decodedInstructions[i].mnemonic.p;
-
-                if (decodedInstructions[i].operands.length != 0) {
-                  mnemonic.append(" ");
-                  mnemonic.append((char *)decodedInstructions[i].operands.p);
-                }
-
-                std::transform(mnemonic.begin(), mnemonic.end(), mnemonic.begin(), ::tolower);
-
-                json opcode;
-		opcode["offset"] = decodedInstructions[i].offset;
-                opcode["hex"] = hex;
-                opcode["mnemonic"] = mnemonic;
-                opcodes.push_back(opcode);
-              }
-
-              exceptionInfo["opcodes"] = opcodes;
-            }
-
-            body["exception"] = exceptionInfo;
-          }
-        }
-      }
+      memory.push_back(region);
     }
+
+    body["memory"] = memory;
   }
 
   return body;
