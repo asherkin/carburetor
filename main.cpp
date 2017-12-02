@@ -454,7 +454,7 @@ int main(int argc, char *argv[]) {
   CompressedSymbolSupplier symbolSupplier(symbolPaths);
 
   Job job;
-  while (true) {
+  do {
     std::string minidumpFile;
 
     if (queue) {
@@ -580,10 +580,8 @@ int main(int argc, char *argv[]) {
       if (processSingleJob) {
         break;
       }
-    } else {
-      break;
     }
-  }
+  } while(!!queue);
 
   return 0;
 }
