@@ -394,13 +394,14 @@ bool RepoSourceLineResolver::Module::ParseFile(char *file_line) {
 
 RepoSourceLineResolver::Function*
 RepoSourceLineResolver::Module::ParseFunction(char *function_line) {
+  bool is_multiple;
   uint64_t address;
   uint64_t size;
   long stack_param_size;
   char *name;
-  if (SymbolParseHelper::ParseFunction(function_line, &address, &size,
-                                       &stack_param_size, &name)) {
-    return new Function(name, address, size, stack_param_size);
+  if (SymbolParseHelper::ParseFunction(function_line, &is_multiple, &address,
+                                       &size, &stack_param_size, &name)) {
+    return new Function(name, address, size, stack_param_size, is_multiple);
   }
   return NULL;
 }
@@ -420,11 +421,12 @@ RepoSourceLineResolver::Line* RepoSourceLineResolver::Module::ParseLine(
 }
 
 bool RepoSourceLineResolver::Module::ParsePublicSymbol(char *public_line) {
+  bool is_multiple;
   uint64_t address;
   long stack_param_size;
   char *name;
 
-  if (SymbolParseHelper::ParsePublicSymbol(public_line, &address,
+  if (SymbolParseHelper::ParsePublicSymbol(public_line, &is_multiple, &address,
                                            &stack_param_size, &name)) {
     // A few public symbols show up with an address of 0.  This has been seen
     // in the dumped output of ntdll.pdb for symbols such as _CIlog, _CIpow,
@@ -437,7 +439,8 @@ bool RepoSourceLineResolver::Module::ParsePublicSymbol(char *public_line) {
     }
 
     linked_ptr<PublicSymbol> symbol(new PublicSymbol(name, address,
-                                                     stack_param_size));
+                                                     stack_param_size,
+                                                     is_multiple));
     return public_symbols_.Store(address, symbol);
   }
   return false;
