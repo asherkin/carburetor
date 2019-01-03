@@ -5,7 +5,7 @@
 
 #include <beanstalk.hpp>
 
-#include <json.hpp>
+#include <nlohmann/json.hpp>
 
 #include <base64_default_rfc4648.hpp>
 

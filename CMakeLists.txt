@@ -61,7 +61,7 @@ ExternalProject_Add(
 )
 
 ExternalProject_Get_Property(json SOURCE_DIR)
-set(JSON_INCLUDE_DIRS ${SOURCE_DIR}/src)
+set(JSON_INCLUDE_DIRS ${SOURCE_DIR}/include)
 
 ExternalProject_Add(
   codec
