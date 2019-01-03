@@ -117,7 +117,7 @@ class RepoSourceLineResolver::Module : public SourceLineResolverBase::Module {
   friend class ModuleComparer;
   friend class ModuleSerializer;
 
-  typedef std::map<string, std::pair<string, string> > RepoMap;
+  typedef std::map<string, std::pair<string, string>, std::greater<string> > RepoMap;
   typedef std::map<int, string> FileMap;
 
   // Logs parse errors.  |*num_errors| is increased every time LogParseError is
