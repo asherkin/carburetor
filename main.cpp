@@ -2,8 +2,7 @@
 #include <fstream>
 #include <chrono>
 #include <memory>
-
-#include <beanstalk.hpp>
+#include <sstream>
 
 #include <nlohmann/json.hpp>
 
@@ -11,15 +10,14 @@
 
 #include <distorm.h>
 
-#include <mysql++/mysql++.h>
-
+#include <google_breakpad/processor/call_stack.h>
+#include <google_breakpad/processor/code_module.h>
 #include <google_breakpad/processor/minidump.h>
 #include <google_breakpad/processor/minidump_processor.h>
 #include <google_breakpad/processor/process_state.h>
-#include <google_breakpad/processor/call_stack.h>
-#include <google_breakpad/processor/stack_frame.h>
 #include <google_breakpad/processor/stack_frame_cpu.h>
-#include <google_breakpad/processor/code_module.h>
+#include <google_breakpad/processor/stack_frame.h>
+#include <google_breakpad/processor/stackwalker.h>
 #include <google_breakpad/processor/system_info.h>
 #include <processor/logging.h>
 #include <processor/pathname_stripper.h>
@@ -27,30 +25,26 @@
 #include "compressed_symbol_supplier.h"
 #include "repo_source_line_resolver.h"
 
-using Beanstalk::Client;
-using Beanstalk::Job;
-
 using nlohmann::json;
 
-using mysqlpp::Connection;
-
-using google_breakpad::Minidump;
-using google_breakpad::MinidumpProcessor;
-using google_breakpad::ProcessState;
-using google_breakpad::ProcessResult;
 using google_breakpad::CallStack;
-using google_breakpad::StackFrame;
-using google_breakpad::StackFrameX86;
-using google_breakpad::StackFrameAMD64;
-using google_breakpad::PathnameStripper;
 using google_breakpad::CodeModule;
-using google_breakpad::SystemInfo;
 using google_breakpad::MemoryRegion;
-using google_breakpad::MinidumpThreadList;
-using google_breakpad::MinidumpMemoryList;
-using google_breakpad::MinidumpException;
+using google_breakpad::Minidump;
 using google_breakpad::MinidumpContext;
+using google_breakpad::MinidumpException;
+using google_breakpad::MinidumpMemoryList;
 using google_breakpad::MinidumpMemoryRegion;
+using google_breakpad::MinidumpProcessor;
+using google_breakpad::MinidumpThreadList;
+using google_breakpad::PathnameStripper;
+using google_breakpad::ProcessResult;
+using google_breakpad::ProcessState;
+using google_breakpad::StackFrame;
+using google_breakpad::StackFrameAMD64;
+using google_breakpad::StackFrameX86;
+using google_breakpad::Stackwalker;
+using google_breakpad::SystemInfo;
 
 // This really shouldn't be in the google_breakpad namespace.
 using google_breakpad::CompressedSymbolSupplier;
@@ -79,7 +73,6 @@ string RenderFrame(const StackFrame *frame) {
 }
 
 json GetStackContents(const StackFrame *frame, const StackFrame *prev_frame, const string &cpu, const MemoryRegion *memory) {
-  // Find stack range.
   int word_length = 0;
   uint64_t stack_begin = 0, stack_end = 0;
   if (cpu == "x86") {
@@ -399,189 +392,85 @@ json SerializeProcessState(Minidump *minidump, const ProcessState *processState,
 int main(int argc, char *argv[]) {
   BPLOG_INIT(&argc, &argv);
 
-  if (argc <= 1) {
-    std::cerr << "Usage: " << argv[0] << " <config file path> [minidump]" << std::endl;
+  bool showHelp = false;
+  bool disableStackScan = false;
+
+  std::vector<std::string> arguments(argv + 1, argv + argc);
+
+  for (auto it = arguments.begin(); it != arguments.end();) {
+    if (it->at(0) != '-') {
+      ++it;
+      continue;
+    }
+
+    const auto arg = *it;
+    it = arguments.erase(it);
+
+    if (arg == "--") {
+      break;
+    }
+
+    if (arg == "-h" || arg == "--help") {
+      showHelp = true;
+      continue;
+    }
+
+    if (arg == "--no-scan") {
+      disableStackScan = true;
+      continue;
+    }
+
+    std::cerr << "Unknown argument: " << arg << std::endl;
+    showHelp = true;
+    break;
+  }
+
+  if (showHelp || arguments.empty()) {
+    std::cerr << "Usage: " << argv[0] << " [options] [--] <minidump> [symbol directory, ...]" << std::endl;
     return 1;
-  }
-
-  std::ifstream configFile;
-  configFile.open(argv[1]);
-  if (!configFile.is_open()) {
-    std::cerr << "Failed to open config file for reading: " << argv[1] << std::endl;
-    return 1;
-  }
-
-  json config;
-  configFile >> config;
-
-  configFile.close();
-
-  std::unique_ptr<Client> queue = nullptr;
-  std::unique_ptr<Connection> mysql = nullptr;
-
-  if (argc <= 2) {
-    const auto &beanstalkHost = config["beanstalk"]["host"];
-    const auto &beanstalkPort = config["beanstalk"]["port"];
-    const auto &beanstalkQueue = config["beanstalk"]["queue"];
-
-    queue = std::make_unique<Client>(beanstalkHost, beanstalkPort);
-    queue->watch(beanstalkQueue);
-
-    BPLOG(INFO) << "Connected to beanstalkd @ " << beanstalkHost << ":" << beanstalkPort << " (queue: " << beanstalkQueue << ")";
-  }
-
-  if (argc <= 2) {
-    const auto &mysqlHost = config["mysql"]["host"];
-    const auto &mysqlPort = config["mysql"]["port"];
-    const auto &mysqlUser = config["mysql"]["user"];
-    const auto &mysqlPassword = config["mysql"]["password"];
-    const auto &mysqlDatabase = config["mysql"]["database"];
-
-    mysql = std::make_unique<Connection>(
-      mysqlDatabase.get<string>().c_str(),
-      mysqlHost.is_null() ? nullptr :mysqlHost.get<string>().c_str(),
-      mysqlUser.is_null() ? nullptr :mysqlUser.get<string>().c_str(),
-      mysqlPassword.is_null() ? nullptr :mysqlPassword.get<string>().c_str(),
-      mysqlPort);
-
-    BPLOG(INFO) << "Connected to MySQL @ " << mysql->ipc_info() << " (database: " << mysqlDatabase << ")";
   }
 
   MinidumpThreadList::set_max_threads(std::numeric_limits<uint32_t>::max());
   MinidumpMemoryList::set_max_regions(std::numeric_limits<uint32_t>::max());
 
-  const std::vector<string> &symbolPaths = config["breakpad"]["symbols"];
+  if (disableStackScan) {
+    Stackwalker::set_max_frames_scanned(0);
+  }
+
+  std::string minidumpFile = arguments[0];
+  arguments.erase(arguments.begin());
+
+  const std::vector<string> &symbolPaths = arguments;
   CompressedSymbolSupplier symbolSupplier(symbolPaths);
 
-  Job job;
-  do {
-    std::string minidumpFile;
+  // The MinidumpProcessor::Process that takes a path has a use-after-free bug.
+  BPLOG(INFO) << "Processing minidump in file " << minidumpFile;
 
-    if (queue) {
-      if (!queue->reserve(job) || !job) {
-        BPLOG(ERROR) << "Failed to reserve job.";
-        break;
-      }
+  Minidump minidump(minidumpFile);
+  if (!minidump.Read()) {
+    BPLOG(ERROR) << "Minidump " << minidump.path() << " could not be read";
+    return 1;
+  }
 
-      const json body = json::parse(job.body());
-      const string &id = body["id"];
-      BPLOG(INFO) << id << " " << body["ip"] << " " << body["owner"];
+  auto start = std::chrono::steady_clock::now();
 
-      const string &minidumpDirectory = config["breakpad"]["minidumps"];
-      minidumpFile = minidumpDirectory + "/" + id.substr(0, 2) + "/" + id + ".dmp";
-    } else {
-      minidumpFile = argv[2];
-    }
+  RepoSourceLineResolver resolver;
+  MinidumpProcessor minidumpProcessor(&symbolSupplier, &resolver);
 
-    // The MinidumpProcessor::Process that takes a path has a use-after-free bug.
-    BPLOG(INFO) << "Processing minidump in file " << minidumpFile;
+  ProcessState processState;
+  ProcessResult processResult = minidumpProcessor.Process(&minidump, &processState);
 
-    Minidump minidump(minidumpFile);
-    if (!minidump.Read()) {
-      BPLOG(ERROR) << "Minidump " << minidump.path() << " could not be read";
+  if (processResult != google_breakpad::PROCESS_OK) {
+    BPLOG(ERROR) << "MinidumpProcessor::Process failed";
+    return 1;
+  }
 
-      if (queue) {
-        queue->del(job);
-      }
+  auto end = std::chrono::steady_clock::now();
+  double elapsedSeconds = ((end - start).count()) * std::chrono::steady_clock::period::num / static_cast<double>(std::chrono::steady_clock::period::den);
 
-      continue;
-    }
+  json serialized = SerializeProcessState(&minidump, &processState, &resolver);
+  serialized["processing_time"] = elapsedSeconds;
 
-    auto start = std::chrono::steady_clock::now();
-
-    // Create this inside the loop to avoid keeping a global symbol cache.
-    RepoSourceLineResolver resolver;
-    MinidumpProcessor minidumpProcessor(&symbolSupplier, &resolver);
-
-    ProcessState processState;
-    ProcessResult processResult = minidumpProcessor.Process(&minidump, &processState);
-
-    if (processResult != google_breakpad::PROCESS_OK) {
-      BPLOG(ERROR) << "MinidumpProcessor::Process failed";
-
-      if (queue) {
-        queue->bury(job);
-      }
-
-      continue;
-    }
-
-    ////////////////////////////////////////////////////////////////////////
-
-#if 0
-    // If there is no requesting thread, print the main thread.
-    int requestingThread = processState.requesting_thread();
-    if (requestingThread == -1) {
-      requestingThread = 0;
-    }
-
-    const CallStack *stack = processState.threads()->at(requestingThread);
-    if (!stack) {
-      BPLOG(ERROR) << "Missing stack for thread " << requestingThread;
-      queue->bury(job);
-      continue;
-    }
-
-    int frameCount = stack->frames()->size();
-    for (int frameIndex = 0; frameIndex < frameCount; ++frameIndex) {
-      const StackFrame *frame = stack->frames()->at(frameIndex);
-
-      std::cout << frameIndex << ": ";
-
-      std::cout << std::hex;
-      if (frame->module) {
-        std::cout << PathnameStripper::File(frame->module->code_file());
-        if (!frame->function_name.empty()) {
-          std::cout << "!" << frame->function_name;
-          if (!frame->source_file_name.empty()) {
-            std::cout << " [" << PathnameStripper::File(frame->source_file_name) << ":" << std::dec << frame->source_line << std::hex << " + 0x" << frame->ReturnAddress() - frame->source_line_base << "]";
-          } else {
-            std::cout << " + 0x" << frame->ReturnAddress() - frame->function_base;
-          }
-        } else {
-          std::cout << " + 0x" << frame->ReturnAddress() - frame->module->base_address();
-        }
-      } else {
-        std::cout << "0x" << frame->ReturnAddress();
-      }
-      std::cout << std::dec;
-
-      std::string repoUrl = resolver.LookupRepoUrl(frame);
-      if (!repoUrl.empty()) {
-        std::cout << " <" << repoUrl << ">";
-      }
-
-      std::cout << std::endl;
-    }
-#endif
-
-    ////////////////////////////////////////////////////////////////////////
-
-    //__asm__("int3");
-
-    auto end = std::chrono::steady_clock::now();
-
-    double elapsedSeconds = ((end - start).count()) * std::chrono::steady_clock::period::num / static_cast<double>(std::chrono::steady_clock::period::den);
-    //std::cout << "Processing Time: " << elapsedSeconds << "s" << std::endl;
-
-    json serialized = SerializeProcessState(&minidump, &processState, &resolver);
-    /*serialized["id"] = id;
-    if (!body["ip"].is_null())
-      serialized["ip"] = body["ip"];
-    if (!body["owner"].is_null())
-      serialized["owner"] = body["owner"];*/
-    serialized["processing_time"] = elapsedSeconds;
-    std::cout << serialized << std::endl;
-
-    if (queue) {
-      queue->del(job);
-
-      bool processSingleJob = config["processSingleJob"];
-      if (processSingleJob) {
-        break;
-      }
-    }
-  } while(!!queue);
-
+  std::cout << serialized << std::endl;
   return 0;
 }
