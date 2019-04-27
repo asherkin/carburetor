@@ -1,37 +1,37 @@
 'use strict';
 
 if (!String.prototype.padStart) {
-    String.prototype.padStart = function padStart(targetLength,padString) {
-        targetLength = targetLength>>0; //floor if number or convert non-number to 0;
-        padString = String(padString || ' ');
-        if (this.length > targetLength) {
-            return String(this);
-        }
-        else {
-            targetLength = targetLength-this.length;
-            if (targetLength > padString.length) {
-                padString += padString.repeat(targetLength/padString.length); //append to original to ensure we are longer than needed
-            }
-            return padString.slice(0,targetLength) + String(this);
-        }
-    };
+	String.prototype.padStart = function padStart(targetLength,padString) {
+		targetLength = targetLength>>0; //floor if number or convert non-number to 0;
+		padString = String(padString || ' ');
+		if (this.length > targetLength) {
+			return String(this);
+		}
+		else {
+			targetLength = targetLength-this.length;
+			if (targetLength > padString.length) {
+				padString += padString.repeat(targetLength/padString.length); //append to original to ensure we are longer than needed
+			}
+			return padString.slice(0,targetLength) + String(this);
+		}
+	};
 }
 
 if (!String.prototype.padEnd) {
-    String.prototype.padEnd = function padEnd(targetLength,padString) {
-        targetLength = targetLength>>0; //floor if number or convert non-number to 0;
-        padString = String(padString || ' ');
-        if (this.length > targetLength) {
-            return String(this);
-        }
-        else {
-            targetLength = targetLength-this.length;
-            if (targetLength > padString.length) {
-                padString += padString.repeat(targetLength/padString.length); //append to original to ensure we are longer than needed
-            }
-            return String(this) + padString.slice(0,targetLength);
-        }
-    };
+	String.prototype.padEnd = function padEnd(targetLength,padString) {
+		targetLength = targetLength>>0; //floor if number or convert non-number to 0;
+		padString = String(padString || ' ');
+		if (this.length > targetLength) {
+			return String(this);
+		}
+		else {
+			targetLength = targetLength-this.length;
+			if (targetLength > padString.length) {
+				padString += padString.repeat(targetLength/padString.length); //append to original to ensure we are longer than needed
+			}
+			return String(this) + padString.slice(0,targetLength);
+		}
+	};
 }
 
 const FRAME_TRUST = [
@@ -166,7 +166,7 @@ function print_instructions(indent, ip, instructions) {
 		let line = indent;
 
 		if (crash_opcode >= 0 && i === crash_opcode) {
-			line = '>' + line.substr(1);
+			line = '  >' + line.substr(3);
 		}
 
 		line += instructions[i].offset.toString(16).padStart(8, '0');
@@ -179,53 +179,31 @@ function print_instructions(indent, ip, instructions) {
 	}
 }
 
-let chunks = [];
-
-process.stdout.on('error', function(err) {
-	if (err.code === 'EPIPE') {
-		process.exit(0);
-		return;
+function print_thread(i, crashed, thread) {
+	let title = 'Thread ' + i;
+	if (crashed) {
+		title += ' (crashed)';
 	}
+	title += ':';
 
-	throw err;
-});
-
-process.stdin.resume();
-process.stdin.setEncoding('utf-8');
-
-process.stdin.on('data', (chunk) => {
-	chunks.push(chunk);
-});
-
-process.stdin.on('end', () => {
-	let data = {};
-	
-	try {
-		data = JSON.parse(chunks.join(''));
-	} catch(e) {
-		console.log('Failed to parse input: ' + e);
-		process.exit(1);
-	}
-
-	const thread = data.threads[data.requesting_thread || 0];
+	console.log(title);
 
 	let num_frames = thread.length;
 	/*if (num_frames > 10) {
 		num_frames = 10;
 	}*/
 
-	if (data.crashed) {
-		console.log(data.crash_reason + ' accessing 0x' + data.crash_address.toString(16));
-		console.log('');
-	}
-
 	for (let i = 0; i < num_frames; ++i) {
 		const frame = thread[i];
 
 		const prefix = i.toString().padStart((num_frames - 1).toString().length, ' ') + ': ';
-		const indent = ' '.repeat(prefix.length);
+		const indent = '  ' + ' '.repeat(prefix.length);
 
-		console.log(prefix + frame.rendered);
+		console.log('  ' + prefix + frame.rendered);
+
+		if (frame.url) {
+			console.log(indent + frame.url);
+		}
 
 		if (frame.registers) {
 			//console.log(indent + 'Registers');
@@ -249,5 +227,53 @@ process.stdin.on('end', () => {
 		console.log('');
 
 		console.log('');
+	}
+}
+
+let chunks = [];
+
+process.stdout.on('error', function(err) {
+	if (err.code === 'EPIPE') {
+		process.exit(0);
+		return;
+	}
+
+	throw err;
+});
+
+process.stdin.resume();
+process.stdin.setEncoding('utf-8');
+
+process.stdin.on('data', (chunk) => {
+	chunks.push(chunk);
+});
+
+process.stdin.on('end', () => {
+	let data = {};
+
+	try {
+		data = JSON.parse(chunks.join(''));
+	} catch(e) {
+		console.log('Failed to parse input: ' + e);
+		process.exit(1);
+	}
+
+	if (data.crashed) {
+		console.log(data.crash_reason + ' accessing 0x' + data.crash_address.toString(16));
+		console.log('');
+	}
+
+	if (typeof data.requesting_thread !== 'undefined' && data.requesting_thread >= 0) {
+		const thread = data.threads[data.requesting_thread];
+		print_thread(data.requesting_thread, true, thread);
+	}
+
+	for (let i = 0; i < data.threads.length; ++i) {
+		if (i === data.requesting_thread) {
+			continue;
+		}
+
+		const thread = data.threads[i];
+		print_thread(i, false, thread);
 	}
 });
