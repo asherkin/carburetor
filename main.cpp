@@ -469,6 +469,7 @@ int main(int argc, char *argv[]) {
   double elapsedSeconds = ((end - start).count()) * std::chrono::steady_clock::period::num / static_cast<double>(std::chrono::steady_clock::period::den);
 
   json serialized = SerializeProcessState(&minidump, &processState, &resolver);
+  serialized["input_file"] = minidump.path();
   serialized["processing_time"] = elapsedSeconds;
 
   std::cout << serialized << std::endl;

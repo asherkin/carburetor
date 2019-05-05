@@ -1,0 +1,125 @@
+From 9afd867fa97d660a134ea874d36b4971f2193f32 Mon Sep 17 00:00:00 2001
+From: patches <patches@localhost>
+Date: Sun, 5 May 2019 19:37:04 +0000
+Subject: [PATCH 2/2] Experimental module creation for JIT memory
+
+---
+ src/google_breakpad/processor/minidump.h |  2 +
+ src/processor/minidump.cc                | 70 +++++++++++++++++++++++-
+ 2 files changed, 71 insertions(+), 1 deletion(-)
+
+diff --git a/src/google_breakpad/processor/minidump.h b/src/google_breakpad/processor/minidump.h
+index febdaeb7..b8484cab 100644
+--- a/src/google_breakpad/processor/minidump.h
++++ b/src/google_breakpad/processor/minidump.h
+@@ -453,6 +453,8 @@ class MinidumpModule : public MinidumpObject,
+   // allow the CodeModule getters to be const methods.
+   bool ReadAuxiliaryData();
+ 
++  bool SetMockData(uint64_t base_of_image, uint32_t size_of_image, string name);
++
+   // The largest number of bytes that will be read from a minidump for a
+   // CodeView record or miscellaneous debugging record, respectively.  The
+   // default for each is 1024.
+diff --git a/src/processor/minidump.cc b/src/processor/minidump.cc
+index 63d4a426..5ecf9f03 100644
+--- a/src/processor/minidump.cc
++++ b/src/processor/minidump.cc
+@@ -1969,6 +1969,17 @@ bool MinidumpModule::ReadAuxiliaryData() {
+ }
+ 
+ 
++bool MinidumpModule::SetMockData(uint64_t base_of_image, uint32_t size_of_image, string name) {
++  module_.base_of_image = base_of_image;
++  module_.size_of_image = size_of_image;
++  name_ = new string(name);
++
++  module_valid_ = true;
++  valid_ = true;
++  return true;
++}
++
++
+ string MinidumpModule::code_file() const {
+   if (!valid_) {
+     BPLOG(ERROR) << "Invalid MinidumpModule for code_file";
+@@ -2731,11 +2742,54 @@ bool MinidumpModuleList::Read(uint32_t expected_size) {
+     return false;
+   }
+ 
++  vector<const MinidumpLinuxMaps*> mock_modules;  
++
++  auto currPos = minidump_->Tell();
++  auto memoryInfo = minidump_->GetMemoryInfoList();
++  auto linuxMemoryInfo = minidump_->GetLinuxMapsList();
++  minidump_->SeekSet(currPos);
++
++  if (memoryInfo) {
++    BPLOG(INFO) << "Found standard memory map info";
++  } else if (linuxMemoryInfo) {
++    BPLOG(INFO) << "Found linux memory map info";
++
++    unsigned int map_count = linuxMemoryInfo->get_maps_count();
++    for (unsigned int i = 0; i < map_count; ++i) {
++      auto map = linuxMemoryInfo->GetLinuxMapsAtIndex(i);
++
++      // JIT maps are always anon
++      if (map->GetInode() != 0/* || !map->GetPathname().empty()*/) {
++        continue;
++      }
++
++      // JIT maps are always RWX (currently)
++      if (/*!map->IsReadable() || !map->IsWriteable() || */!map->IsExecutable()) {
++        continue;
++      }
++
++      // 1MB is the min JIT pool size
++      /*
++      if (map->GetSize() != 1048576) {
++        continue;
++      }
++      */
++
++      //map->Print();
++      mock_modules.push_back(map);
++    }
++  } else {
++    BPLOG(INFO) << "Found no memory map info";
++  }
++
++  uint32_t original_module_count = module_count;
++  module_count += mock_modules.size();
++
+   if (module_count != 0) {
+     scoped_ptr<MinidumpModules> modules(
+         new MinidumpModules(module_count, MinidumpModule(minidump_)));
+ 
+-    for (uint32_t module_index = 0; module_index < module_count;
++    for (uint32_t module_index = 0; module_index < original_module_count;
+          ++module_index) {
+       MinidumpModule* module = &(*modules)[module_index];
+ 
+@@ -2757,6 +2811,20 @@ bool MinidumpModuleList::Read(uint32_t expected_size) {
+          ++module_index) {
+       MinidumpModule& module = (*modules)[module_index];
+ 
++      if (module_index >= original_module_count) {
++        uint32_t mock_module_index = module_index - original_module_count;
++        const MinidumpLinuxMaps* map = mock_modules[mock_module_index];
++        
++        string name = map->GetPathname();
++        if (name.empty()) {
++          name = string("jit_code_") + std::to_string(map->GetBase()) + string("_") + std::to_string(map->GetSize());
++        }
++
++        module.SetMockData(map->GetBase(), map->GetSize(), name);
++        //module.Print();
++        continue;
++      }
++
+       // ReadAuxiliaryData fails if any data that the module indicates should
+       // exist is missing, but we treat some such cases as valid anyway.  See
+       // issue #222: if a debugging record is of a format that's too large to
+-- 
+2.17.2
+
