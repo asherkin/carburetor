@@ -1,0 +1,47 @@
+policy_module(carburetor, 1.0.0)
+
+########################################
+#
+# Declarations
+#
+
+attribute_role carburetor_roles;
+roleattribute system_r carburetor_roles;
+
+type carburetor_t;
+type carburetor_exec_t;
+application_domain(carburetor_t, carburetor_exec_t)
+role carburetor_roles types carburetor_t;
+
+permissive carburetor_t;
+
+########################################
+#
+# carburetor local policy
+#
+
+domain_use_interactive_fds(carburetor_t)
+
+userdom_use_inherited_user_ptys(carburetor_t)
+
+optional_policy(`
+	gen_require(`
+		type unconfined_t;
+		role unconfined_r;
+	')
+
+	carburetor_run(unconfined_t, unconfined_r)
+')
+
+optional_policy(`
+	gen_require(`
+		type httpd_t;
+		role system_r;
+	')
+
+	carburetor_run(httpd_t, system_r)
+
+    apache_read_sys_content(carburetor_t)
+    apache_read_sys_content_rw_files(carburetor_t)
+    apache_manage_sys_content_rw(carburetor_t)
+')

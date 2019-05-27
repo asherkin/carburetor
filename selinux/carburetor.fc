@@ -1,0 +1,2 @@
+/var/www/throttle/bin/carburetor		    --	gen_context(system_u:object_r:carburetor_exec_t,s0)
+/var/www/throttle-next/bin/carburetor	    --	gen_context(system_u:object_r:carburetor_exec_t,s0)

@@ -1,0 +1,95 @@
+
+## <summary>policy for carburetor</summary>
+
+########################################
+## <summary>
+##	Execute carburetor_exec_t in the carburetor domain.
+## </summary>
+## <param name="domain">
+## <summary>
+##	Domain allowed to transition.
+## </summary>
+## </param>
+#
+interface(`carburetor_domtrans',`
+	gen_require(`
+		type carburetor_t, carburetor_exec_t;
+	')
+
+	corecmd_search_bin($1)
+	domtrans_pattern($1, carburetor_exec_t, carburetor_t)
+')
+
+######################################
+## <summary>
+##	Execute carburetor in the caller domain.
+## </summary>
+## <param name="domain">
+##	<summary>
+##	Domain allowed access.
+##	</summary>
+## </param>
+#
+interface(`carburetor_exec',`
+	gen_require(`
+		type carburetor_exec_t;
+	')
+
+	corecmd_search_bin($1)
+	can_exec($1, carburetor_exec_t)
+')
+
+########################################
+## <summary>
+##	Execute carburetor in the carburetor domain, and
+##	allow the specified role the carburetor domain.
+## </summary>
+## <param name="domain">
+##	<summary>
+##	Domain allowed to transition
+##	</summary>
+## </param>
+## <param name="role">
+##	<summary>
+##	The role to be allowed the carburetor domain.
+##	</summary>
+## </param>
+#
+interface(`carburetor_run',`
+	gen_require(`
+		type carburetor_t;
+		attribute_role carburetor_roles;
+	')
+
+	carburetor_domtrans($1)
+	roleattribute $2 carburetor_roles;
+')
+
+########################################
+## <summary>
+##	Role access for carburetor
+## </summary>
+## <param name="role">
+##	<summary>
+##	Role allowed access
+##	</summary>
+## </param>
+## <param name="domain">
+##	<summary>
+##	User domain for the role
+##	</summary>
+## </param>
+#
+interface(`carburetor_role',`
+	gen_require(`
+		type carburetor_t;
+		attribute_role carburetor_roles;
+	')
+
+	roleattribute $1 carburetor_roles;
+
+	carburetor_domtrans($2)
+
+	ps_process_pattern($2, carburetor_t)
+	allow $2 carburetor_t:process { signull signal sigkill };
+')
