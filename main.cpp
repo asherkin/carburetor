@@ -426,7 +426,11 @@ int main(int argc, char *argv[]) {
   }
 
   if (showHelp || arguments.empty()) {
-    std::cerr << "Usage: " << argv[0] << " [options] [--] <minidump> [symbol directory, ...]" << std::endl;
+    std::cerr << "Usage: " << argv[0] << " [options ...] [--] <minidump> [symbol directories ...]" << std::endl;
+    std::cerr << std::endl;
+    std::cerr << "Options:" << std::endl;
+    std::cerr << "  --help [-h] This message" << std::endl;
+    std::cerr << "  --no-scan   Disable stack scanning" << std::endl;
     return 1;
   }
 
