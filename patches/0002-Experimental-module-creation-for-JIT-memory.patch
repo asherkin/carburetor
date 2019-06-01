@@ -64,7 +64,7 @@ index 63d4a426..5ecf9f03 100644
 +      auto map = linuxMemoryInfo->GetLinuxMapsAtIndex(i);
 +
 +      // JIT maps are always anon
-+      if (map->GetInode() != 0/* || !map->GetPathname().empty()*/) {
++      if (map->GetInode() != 0/* || !map->GetPathname().empty()*/ || map->GetPathname() == "[vdso]") {
 +        continue;
 +      }
 +

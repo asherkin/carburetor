@@ -29,6 +29,7 @@ using nlohmann::json;
 
 using google_breakpad::CallStack;
 using google_breakpad::CodeModule;
+using google_breakpad::CodeModules;
 using google_breakpad::MemoryRegion;
 using google_breakpad::Minidump;
 using google_breakpad::MinidumpContext;
@@ -137,7 +138,7 @@ json SerializeCodeModule(const CodeModule *codeModule) {
   return body;
 }
 
-json SerializeProcessState(Minidump *minidump, const ProcessState *processState, RepoSourceLineResolver *resolver) {
+json SerializeProcessState(Minidump *minidump, const ProcessState *processState, RepoSourceLineResolver *resolver, bool includeInstructions, bool includeMemory) {
   json body;
 
   MinidumpMemoryList *memoryList = minidump->GetMemoryList();
@@ -252,7 +253,7 @@ json SerializeProcessState(Minidump *minidump, const ProcessState *processState,
         frame["registers"] = registers;
       }
 
-      if (instructionPtr != 0 && memoryList) {
+      if (includeInstructions && instructionPtr != 0 && memoryList) {
         MinidumpMemoryRegion *instructionRegion = memoryList->GetMemoryRegionForAddress(instructionPtr);
         if (instructionRegion) {
           uint64_t instructionMemoryBase = instructionRegion->GetBase();
@@ -312,7 +313,7 @@ json SerializeProcessState(Minidump *minidump, const ProcessState *processState,
       }
 
       size_t callingFrameIndex = thread.size() + 1;
-      if (callingFrameIndex < callStack->frames()->size()) {
+      if (includeMemory && callingFrameIndex < callStack->frames()->size()) {
         size_t threadIndex = threads.size();
         const StackFrame *callingFrame = callStack->frames()->at(callingFrameIndex);
         const MemoryRegion *threadMemory = processState->thread_memory_regions()->at(threadIndex);
@@ -369,7 +370,7 @@ json SerializeProcessState(Minidump *minidump, const ProcessState *processState,
       body["modules_with_corrupt_symbols"] = modulesWithCorruptSymbols;
   }
 
-  if (memoryList) {
+  if (includeMemory && memoryList) {
     json memory;
 
     for (size_t i = 0; i < memoryList->region_count(); ++i) {
@@ -393,7 +394,10 @@ int main(int argc, char *argv[]) {
   BPLOG_INIT(&argc, &argv);
 
   bool showHelp = false;
+  bool printModulesOnly = false;
   bool disableStackScan = false;
+  bool disableMemoryOutput = false;
+  bool disableInstructionsOutput = false;
 
   std::vector<std::string> arguments(argv + 1, argv + argc);
 
@@ -415,8 +419,23 @@ int main(int argc, char *argv[]) {
       continue;
     }
 
+    if (arg == "--modules") {
+        printModulesOnly = true;
+        continue;
+    }
+
     if (arg == "--no-scan") {
       disableStackScan = true;
+      continue;
+    }
+
+    if (arg == "--no-memory") {
+      disableMemoryOutput = true;
+      continue;
+    }
+
+    if (arg == "--no-instructions") {
+      disableInstructionsOutput = true;
       continue;
     }
 
@@ -429,8 +448,11 @@ int main(int argc, char *argv[]) {
     std::cerr << "Usage: " << argv[0] << " [options ...] [--] <minidump> [symbol directories ...]" << std::endl;
     std::cerr << std::endl;
     std::cerr << "Options:" << std::endl;
-    std::cerr << "  --help [-h] This message" << std::endl;
-    std::cerr << "  --no-scan   Disable stack scanning" << std::endl;
+    std::cerr << "  --help [-h]        This message" << std::endl;
+    std::cerr << "  --modules          Output the module list only" << std::endl;
+    std::cerr << "  --no-scan          Disable stack scanning" << std::endl;
+    std::cerr << "  --no-memory        Disable raw memory output" << std::endl;
+    std::cerr << "  --no-instructions  Disable dissasembled instructions output" << std::endl;
     return 1;
   }
 
@@ -444,9 +466,6 @@ int main(int argc, char *argv[]) {
   std::string minidumpFile = arguments[0];
   arguments.erase(arguments.begin());
 
-  const std::vector<string> &symbolPaths = arguments;
-  CompressedSymbolSupplier symbolSupplier(symbolPaths);
-
   // The MinidumpProcessor::Process that takes a path has a use-after-free bug.
   BPLOG(INFO) << "Processing minidump in file " << minidumpFile;
 
@@ -456,7 +475,26 @@ int main(int argc, char *argv[]) {
     return 1;
   }
 
+  if (printModulesOnly) {
+    CodeModules *moduleList = minidump.GetModuleList();
+    if (!moduleList) {
+      return 1;
+    }
+
+    json modules;
+    unsigned int module_count = moduleList->module_count();
+    for (unsigned int i = 0; i < module_count; ++i) {
+      modules.push_back(SerializeCodeModule(moduleList->GetModuleAtIndex(i)));
+    }
+
+    std::cout << modules << std::endl;
+    return 0;
+  }
+
   auto start = std::chrono::steady_clock::now();
+
+  const std::vector<string> &symbolPaths = arguments;
+  CompressedSymbolSupplier symbolSupplier(symbolPaths);
 
   RepoSourceLineResolver resolver;
   MinidumpProcessor minidumpProcessor(&symbolSupplier, &resolver);
@@ -472,7 +510,7 @@ int main(int argc, char *argv[]) {
   auto end = std::chrono::steady_clock::now();
   double elapsedSeconds = ((end - start).count()) * std::chrono::steady_clock::period::num / static_cast<double>(std::chrono::steady_clock::period::den);
 
-  json serialized = SerializeProcessState(&minidump, &processState, &resolver);
+  json serialized = SerializeProcessState(&minidump, &processState, &resolver, !disableInstructionsOutput, !disableMemoryOutput);
   serialized["input_file"] = minidump.path();
   serialized["processing_time"] = elapsedSeconds;
 
