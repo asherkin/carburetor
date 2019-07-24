@@ -12,7 +12,7 @@ ExternalProject_Add(
   breakpad
   GIT_REPOSITORY https://chromium.googlesource.com/breakpad/breakpad.git
   UPDATE_COMMAND ""
-  PATCH_COMMAND git config user.name patches && git config user.email patches@localhost && git am -3 ${BREAKPAD_PATCHES}
+  PATCH_COMMAND git reset --hard origin/master && git config user.name patches && git config user.email patches@localhost && git am -3 ${BREAKPAD_PATCHES}
   CONFIGURE_COMMAND <SOURCE_DIR>/configure --prefix=<INSTALL_DIR>
   BUILD_COMMAND $(MAKE) src/libbreakpad.a src/third_party/libdisasm/libdisasm.a
   INSTALL_COMMAND ""
