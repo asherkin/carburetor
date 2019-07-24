@@ -4,7 +4,7 @@ project(carburetor)
 include(ExternalProject)
 include(CheckIncludeFileCXX)
 
-set(CMAKE_CXX_STANDARD 14)
+set(CMAKE_CXX_STANDARD 17)
 
 file(GLOB BREAKPAD_PATCHES ${CMAKE_CURRENT_LIST_DIR}/patches/*.patch)
 

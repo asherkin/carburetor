@@ -1,8 +1,11 @@
+// vim: set et ts=2 sw=2:
+
 #include <iostream>
 #include <fstream>
 #include <chrono>
 #include <memory>
 #include <sstream>
+#include <optional>
 
 #include <nlohmann/json.hpp>
 
@@ -59,7 +62,7 @@ string RenderFrame(const StackFrame *frame) {
     if (!frame->function_name.empty()) {
       out << "!" << frame->function_name;
       if (!frame->source_file_name.empty()) {
-        out << " [" << PathnameStripper::File(frame->source_file_name) << ":" << std::dec << frame->source_line << std::hex << " + 0x" << frame->ReturnAddress() - frame->source_line_base << "]";
+        out << " [ " << PathnameStripper::File(frame->source_file_name) << ":" << std::dec << frame->source_line << std::hex << " + 0x" << frame->ReturnAddress() - frame->source_line_base << " ]";
       } else {
         out << " + 0x" << frame->ReturnAddress() - frame->function_base;
       }
@@ -73,7 +76,7 @@ string RenderFrame(const StackFrame *frame) {
   return out.str();
 }
 
-json GetStackContents(const StackFrame *frame, const StackFrame *prev_frame, const string &cpu, const MemoryRegion *memory) {
+std::optional<std::vector<uint8_t>> GetStackContents(const StackFrame *frame, const StackFrame *prev_frame, const string &cpu, const MemoryRegion *memory) {
   int word_length = 0;
   uint64_t stack_begin = 0, stack_end = 0;
   if (cpu == "x86") {
@@ -98,28 +101,28 @@ json GetStackContents(const StackFrame *frame, const StackFrame *prev_frame, con
   }
 
   if (!word_length || !stack_begin || !stack_end) {
-    return false;
+    return {};
   }
 
   size_t stack_offset = stack_begin - memory->GetBase();
   size_t stack_size = stack_end - stack_begin;
 
   if (stack_size > memory->GetSize() || stack_offset >= (memory->GetSize() - stack_size)) {
-    return false;
+    return {};
   }
 
-  string data_as_string;
+  std::vector<uint8_t> data_as_string;
   data_as_string.reserve(stack_size);
   for (uint64_t address = stack_begin; address < stack_end; ++address) {
-      uint8_t value = 0;
-      if (!memory->GetMemoryAtAddress(address, &value)) {
-        return false;
-      }
+    uint8_t value = 0;
+    if (!memory->GetMemoryAtAddress(address, &value)) {
+      return {};
+    }
 
-      data_as_string.push_back(value);
+    data_as_string.push_back(value);
   }
 
-  return base64::encode(data_as_string);
+  return data_as_string;
 }
 
 json SerializeCodeModule(const CodeModule *codeModule) {
@@ -141,7 +144,6 @@ json SerializeCodeModule(const CodeModule *codeModule) {
 json SerializeProcessState(Minidump *minidump, const ProcessState *processState, RepoSourceLineResolver *resolver, bool includeInstructions, bool includeMemory) {
   json body;
 
-  MinidumpMemoryList *memoryList = minidump->GetMemoryList();
   const string &cpu = processState->system_info()->cpu;
 
   if (processState->time_date_stamp() != 0)
@@ -158,9 +160,102 @@ json SerializeProcessState(Minidump *minidump, const ProcessState *processState,
   if (processState->exploitability() != google_breakpad::EXPLOITABILITY_NOT_ANALYZED)
     body["exploitability"] = processState->exploitability();
 
+  std::map<uint32_t, std::pair<std::string, std::map<uint32_t, std::string>>> pluginMap;
+
+  MinidumpMemoryList *memoryList = minidump->GetMemoryList();
+  if (memoryList) {
+    json memory;
+
+    for (size_t i = 0; i < memoryList->region_count(); ++i) {
+      MinidumpMemoryRegion *memoryRegion = memoryList->GetMemoryRegionAtIndex(i);
+      const uint8_t *regionPtr = memoryRegion->GetMemory();
+      uint32_t regionSize = memoryRegion->GetSize();
+
+      if (includeMemory) {
+        json region;
+        region["base"] = memoryRegion->GetBase();
+        region["size"] = regionSize;
+        region["data"] = base64::encode(regionPtr, regionSize);
+
+        memory.push_back(region);
+      }
+
+      if (regionSize > 20) {
+        const uint8_t *cursor = regionPtr;
+
+        uint64_t magic;
+        memcpy(&magic, cursor, sizeof(uint64_t));
+        cursor += sizeof(uint64_t);
+        if (magic != 103582791429521979ULL) {
+          continue;
+        }
+
+        memcpy(&magic, regionPtr + regionSize - sizeof(uint64_t), sizeof(uint64_t));
+        if (magic != 76561197987819599ULL) {
+          continue;
+        }
+
+        uint32_t version;
+        memcpy(&version, cursor, sizeof(uint32_t));
+        cursor += sizeof(uint32_t);
+        if (version != 1) {
+          continue;
+        }
+
+        uint32_t size;
+        memcpy(&size, cursor, sizeof(uint32_t));
+        cursor += sizeof(uint32_t);
+        if (size != regionSize) {
+          continue;
+        }
+
+        uint32_t pluginCount;
+        memcpy(&pluginCount, cursor, sizeof(uint32_t));
+        cursor += sizeof(uint32_t);
+
+        for (uint32_t j = 0; j < pluginCount; ++j) {
+          // skip over size
+          cursor += sizeof(uint32_t);
+
+          uint32_t contextAddr;
+          memcpy(&contextAddr, cursor, sizeof(uint32_t));
+          cursor += sizeof(uint32_t);
+
+          const char *pluginFile = (const char *)cursor;
+          cursor += strlen(pluginFile) + 1;
+
+          uint32_t functionCount;
+          memcpy(&functionCount, cursor, sizeof(uint32_t));
+          cursor += sizeof(uint32_t);
+
+          std::map<uint32_t, std::string> functionMap;
+          for (uint32_t k = 0; k < functionCount; ++k) {
+            uint32_t functionPcode;
+            memcpy(&functionPcode, cursor, sizeof(uint32_t));
+            cursor += sizeof(uint32_t);
+
+            const char *functionName = (const char *)cursor;
+            cursor += strlen(functionName) + 1;
+
+            functionMap[functionPcode] = functionName;
+          }
+
+          pluginMap[contextAddr] = std::pair<std::string, std::map<uint32_t, std::string>>(pluginFile, functionMap);
+        }
+      }
+    }
+
+    if (memory.size() > 0) {
+      body["memory"] = memory;
+    }
+  }
+
   json threads;
   for (const CallStack *callStack: *processState->threads()) {
     json thread;
+
+    std::optional<std::pair<std::string, std::map<uint32_t, std::string>>> pluginInfo;
+
     for (const StackFrame *stackFrame: *callStack->frames()) {
       json frame;
 
@@ -183,7 +278,64 @@ json SerializeProcessState(Minidump *minidump, const ProcessState *processState,
       if (!url.empty())
         frame["url"] = url;
 
-      frame["rendered"] = RenderFrame(stackFrame);
+      string rendered = RenderFrame(stackFrame);
+
+      size_t callingFrameIndex = thread.size() + 1;
+      if ((includeMemory || !pluginMap.empty() ) && callingFrameIndex < callStack->frames()->size()) {
+        size_t threadIndex = threads.size();
+        const StackFrame *callingFrame = callStack->frames()->at(callingFrameIndex);
+        const MemoryRegion *threadMemory = processState->thread_memory_regions()->at(threadIndex);
+
+        auto stack = GetStackContents(stackFrame, callingFrame, cpu, threadMemory);
+        if (stack && includeMemory) {
+          frame["stack"] = base64::encode(*stack);
+        }
+
+        if (stack && !pluginMap.empty() && (!stackFrame->module || rendered.rfind("jit_code_", 0) == 0)) {
+          if (!pluginInfo && stack->size() >= 48) {
+            uint32_t exitFrameType;
+            memcpy(&exitFrameType, stack->data() + stack->size() - (7 * 4), sizeof(uint32_t));
+            if (exitFrameType == 3) {
+                uint32_t contextPtr;
+                memcpy(&contextPtr, stack->data() + stack->size() - (12 * 4), sizeof(uint32_t));
+
+                const auto pluginSearch = pluginMap.find(contextPtr);
+                if (pluginSearch != pluginMap.end()) {
+                  pluginInfo = pluginSearch->second;
+                }
+            }
+          }
+
+          if (pluginInfo && stack->size() >= 16) {
+            uint32_t frameType;
+            memcpy(&frameType, stack->data() + stack->size() - (3 * 4), sizeof(uint32_t));
+            if (frameType == 2) {
+                uint32_t functionId;
+                memcpy(&functionId, stack->data() + stack->size() - (4 * 4), sizeof(uint32_t));
+
+                const auto functionSearch = pluginInfo->second.find(functionId);
+                if (functionSearch != pluginInfo->second.end()) {
+                  string pluginName = pluginInfo->first;
+                  string functionName = functionSearch->second;
+                  rendered += " [ " + pluginName + "::" + functionName + " ]";
+
+                  json plugin;
+                  plugin["file"] = pluginName;
+                  plugin["function"] = functionName;
+                  frame["plugin"] = plugin;
+                }
+            } else {
+              pluginInfo = std::nullopt;
+            }
+          } else {
+            pluginInfo = std::nullopt;
+          }
+        } else {
+          pluginInfo = std::nullopt;
+        }
+      }
+
+      frame["rendered"] = rendered;
 
       uint64_t instructionPtr = 0;
 
@@ -312,15 +464,6 @@ json SerializeProcessState(Minidump *minidump, const ProcessState *processState,
         }
       }
 
-      size_t callingFrameIndex = thread.size() + 1;
-      if (includeMemory && callingFrameIndex < callStack->frames()->size()) {
-        size_t threadIndex = threads.size();
-        const StackFrame *callingFrame = callStack->frames()->at(callingFrameIndex);
-        const MemoryRegion *threadMemory = processState->thread_memory_regions()->at(threadIndex);
-
-        frame["stack"] = GetStackContents(stackFrame, callingFrame, cpu, threadMemory);
-      }
-
       thread.push_back(frame);
     }
     threads.push_back(thread);
@@ -368,23 +511,6 @@ json SerializeProcessState(Minidump *minidump, const ProcessState *processState,
     }
     if (modulesWithCorruptSymbols.is_array())
       body["modules_with_corrupt_symbols"] = modulesWithCorruptSymbols;
-  }
-
-  if (includeMemory && memoryList) {
-    json memory;
-
-    for (size_t i = 0; i < memoryList->region_count(); ++i) {
-      MinidumpMemoryRegion *memoryRegion = memoryList->GetMemoryRegionAtIndex(i);
-
-      json region;
-      region["base"] = memoryRegion->GetBase();
-      region["size"] = memoryRegion->GetSize();
-      region["data"] = base64::encode(memoryRegion->GetMemory(), memoryRegion->GetSize());
-
-      memory.push_back(region);
-    }
-
-    body["memory"] = memory;
   }
 
   return body;
