@@ -291,13 +291,30 @@ json SerializeProcessState(Minidump *minidump, const ProcessState *processState,
           frame["stack"] = base64::encode(*stack);
         }
 
-        if (stack && !pluginMap.empty() && (!stackFrame->module || rendered.rfind("jit_code_", 0) == 0)) {
+        // On legacy Linux dumps, the exit frame can be in the stack memory for the upper frame, so don't check that the current frame is JIT code
+        if (stack && !pluginMap.empty() /*&& (!stackFrame->module || rendered.rfind("jit_code_", 0) == 0)*/) {
           if (!pluginInfo && stack->size() >= 48) {
+            // Modern frame layout
             uint32_t exitFrameType;
             memcpy(&exitFrameType, stack->data() + stack->size() - (7 * 4), sizeof(uint32_t));
             if (exitFrameType == 3) {
                 uint32_t contextPtr;
                 memcpy(&contextPtr, stack->data() + stack->size() - (12 * 4), sizeof(uint32_t));
+
+                const auto pluginSearch = pluginMap.find(contextPtr);
+                if (pluginSearch != pluginMap.end()) {
+                  pluginInfo = pluginSearch->second;
+                }
+            }
+          }
+
+          if (!pluginInfo && stack->size() >= 32) {
+            // Legacy frame layout
+            uint32_t exitFrameType;
+            memcpy(&exitFrameType, stack->data() + stack->size() - (3 * 4), sizeof(uint32_t));
+            if (exitFrameType == 3) {
+                uint32_t contextPtr;
+                memcpy(&contextPtr, stack->data() + stack->size() - (8 * 4), sizeof(uint32_t));
 
                 const auto pluginSearch = pluginMap.find(contextPtr);
                 if (pluginSearch != pluginMap.end()) {
@@ -324,7 +341,7 @@ json SerializeProcessState(Minidump *minidump, const ProcessState *processState,
                   plugin["function"] = functionName;
                   frame["plugin"] = plugin;
                 }
-            } else {
+            } else if (frameType != 3) {
               pluginInfo = std::nullopt;
             }
           } else {
