@@ -45,27 +45,54 @@ const FRAME_TRUST = [
 ];
 
 let options = {
-    details: true,
-    all_threads: false,
+	details: true,
+	all_threads: false,
 };
 
 function print_registers(indent, registers) {
+	let order = [
+		"eip", "esp", "ebp", "ebx",
+		"esi", "edi", "eax", "ecx",
+		"edx", "efl",
+		"rax", "rdx", "rcx", "rbx",
+		"rsi", "rdi", "rbp", "rsp",
+		 "r8",  "r9", "r10", "r11",
+		"r12", "r13", "r14",
+		"r15", "rip",
+	];
+
+	let source = order;
+	let printed = {};
 	let register_count = 0;
 	let line = indent;
 
-	for (let register in registers) {
-		line += register + ': 0x' + registers[register].toString(16).padStart(8, '0');
+	for (let i = 0; i < 2; ++i) {
+		for (let register in source) {
+			if (i === 0) {
+				register = order[register];
+			}
 
-		register_count++;
+			if (printed[register] || registers[register] === undefined) {
+				continue;
+			}
 
-		if (register_count < 3) {
-			line += '  ';
-		} else {
-			console.log(line);
+			line += register + ': 0x' + registers[register].toString(16).padStart(8, '0');
 
-			register_count = 0;
-			line = indent;
+			register_count++;
+
+			if (register_count < 4) {
+				line += '  ';
+			} else {
+				console.log(line);
+
+				register_count = 0;
+				line = indent;
+			}
+
+			printed[register] = true;
 		}
+
+		source = registers;
 	}
 
 	if (register_count > 0) {
@@ -206,63 +233,63 @@ function print_thread(i, crashed, thread) {
 
 		console.log('  ' + prefix + frame.rendered);
 
-        if (!options.details) {
-            continue;
-        }
+		if (!options.details) {
+			continue;
+		}
 
-        if (frame.url) {
-            console.log(indent + frame.url);
-        }
+		if (frame.url) {
+			console.log(indent + frame.url);
+		}
 
-        if (frame.registers) {
-            //console.log(indent + 'Registers');
-            print_registers(indent, frame.registers);
-            console.log('');
-        }
+		if (frame.registers) {
+			//console.log(indent + 'Registers');
+			print_registers(indent, frame.registers);
+			console.log('');
+		}
 
-        if (frame.instructions) {
-            //console.log(indent + 'Disassembly');
-            print_instructions(indent, frame.instruction, frame.instructions);
-            console.log('');
-        }
+		if (frame.instructions) {
+			//console.log(indent + 'Disassembly');
+			print_instructions(indent, frame.instruction, frame.instructions);
+			console.log('');
+		}
 
-        if (frame.stack) {
-            //console.log(indent + 'Stack Memory');
-            print_stack(indent, frame.registers && frame.registers.esp, Buffer.from(frame.stack, 'base64'));
-            console.log('');
-        }
+		if (frame.stack) {
+			//console.log(indent + 'Stack Memory');
+			print_stack(indent, frame.registers && frame.registers.esp, Buffer.from(frame.stack, 'base64'));
+			console.log('');
+		}
 
-        console.log(indent + 'Found via ' + (FRAME_TRUST[frame.trust] || FRAME_TRUST[0]));
-        console.log('');
+		console.log(indent + 'Found via ' + (FRAME_TRUST[frame.trust] || FRAME_TRUST[0]));
+		console.log('');
 
-        console.log('');
+		console.log('');
 	}
 
-    if (!options.details) {
-        console.log('');
-    }
+	if (!options.details) {
+		console.log('');
+	}
 }
 
 for (let i = 2; i < process.argv.length; ++i) {
-    const arg = process.argv[i];
-    if (arg.substr(0, 2) !== '--') {
-        continue;
-    }
+	const arg = process.argv[i];
+	if (arg.substr(0, 2) !== '--') {
+		continue;
+	}
 
-    let value = true;
-    let option = arg.substr(2);
-    if (option.substr(0, 3) === 'no-') {
-        value = false;
-        option = option.substr(3);
-    }
+	let value = true;
+	let option = arg.substr(2);
+	if (option.substr(0, 3) === 'no-') {
+		value = false;
+		option = option.substr(3);
+	}
 
-    option = option.replace(/-/g, '_');
+	option = option.replace(/-/g, '_');
 
-    if (typeof options[option] === 'undefined') {
-        throw new Error('Unknown option: ' + option);
-    }
+	if (typeof options[option] === 'undefined') {
+		throw new Error('Unknown option: ' + option);
+	}
 
-    options[option] = value;
+	options[option] = value;
 }
 
 let chunks = [];
@@ -303,14 +330,14 @@ process.stdin.on('end', () => {
 		print_thread(data.requesting_thread, true, thread);
 	}
 
-    if (options.all_threads) {
-        for (let i = 0; i < data.threads.length; ++i) {
-            if (i === data.requesting_thread) {
-                continue;
-            }
+	if (options.all_threads) {
+		for (let i = 0; i < data.threads.length; ++i) {
+			if (i === data.requesting_thread) {
+				continue;
+			}
 
-            const thread = data.threads[i];
-            print_thread(i, false, thread);
-        }
-    }
+			const thread = data.threads[i];
+			print_thread(i, false, thread);
+		}
+	}
 });

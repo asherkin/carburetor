@@ -456,9 +456,11 @@ json SerializeProcessState(Minidump *minidump, const ProcessState *processState,
 
           for (unsigned int i = 0; i < decodedInstructionsCount; ++i) {
             // Ignore 3 instructions at the start and and, to avoid synchronization issues.
+#if 0       // We handle this on the analyze end now by only showing the 5 instructions around eip
             if (i < 3 || i >= (decodedInstructionsCount - 3)) {
               continue;
             }
+#endif
 
             std::string hex = (char *)decodedInstructions[i].instructionHex.p;
             std::string mnemonic = (char *)decodedInstructions[i].mnemonic.p;
