@@ -42,6 +42,15 @@ optional_policy(`
 	carburetor_run(httpd_t, system_r)
 
     apache_read_sys_content(carburetor_t)
+    apache_read_sys_content_rw_dirs(carburetor_t)
     apache_read_sys_content_rw_files(carburetor_t)
-    apache_manage_sys_content_rw(carburetor_t)
+')
+
+optional_policy(`
+    gen_require(`
+        type fusefs_t;
+    ')
+
+    fs_read_fusefs_files(carburetor_t)
+    fs_read_fusefs_symlinks(carburetor_t)
 ')
